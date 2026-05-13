@@ -7,8 +7,8 @@ import shutil
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
 logging.basicConfig(level=logging.INFO)
 
@@ -17,26 +17,45 @@ ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 DATA_DIR = "extracted_files"
 ZIP_FILE = "data.zip"
 CODES_FILE = "access_codes.json"
+USERS_FILE = "users_db.json"
+STATS_FILE = "stats.json"
 
 ACCESS_CODES = {}
+USERS_DB = {}
+STATS = {}
 
-def load_codes():
-    """حمل الأكواد من الملف"""
-    global ACCESS_CODES
+def load_all_data():
+    global ACCESS_CODES, USERS_DB, STATS
     if os.path.exists(CODES_FILE):
         try:
             with open(CODES_FILE, "r") as f:
                 ACCESS_CODES = json.load(f)
         except:
             ACCESS_CODES = {}
+    
+    if os.path.exists(USERS_FILE):
+        try:
+            with open(USERS_FILE, "r") as f:
+                USERS_DB = json.load(f)
+        except:
+            USERS_DB = {}
+    
+    if os.path.exists(STATS_FILE):
+        try:
+            with open(STATS_FILE, "r") as f:
+                STATS = json.load(f)
+        except:
+            STATS = {}
 
-def save_codes():
-    """حفظ الأكواد في الملف"""
+def save_all_data():
     with open(CODES_FILE, "w") as f:
         json.dump(ACCESS_CODES, f)
+    with open(USERS_FILE, "w") as f:
+        json.dump(USERS_DB, f)
+    with open(STATS_FILE, "w") as f:
+        json.dump(STATS, f)
 
 def is_code_valid(user_id, code):
-    """تحقق من صحة الكود"""
     if code not in ACCESS_CODES:
         return False, "❌ الكود غير موجود"
     
@@ -53,7 +72,6 @@ def is_code_valid(user_id, code):
     return True, "✅ كود صحيح"
 
 def extract_drive_id(url):
-    """استخرج ID من رابط Google Drive"""
     patterns = [
         r"/file/d/([a-zA-Z0-9_-]+)",
         r"id=([a-zA-Z0-9_-]+)",
@@ -65,128 +83,215 @@ def extract_drive_id(url):
             return match.group(1)
     return None
 
+def get_main_menu():
+    keyboard = [
+        [InlineKeyboardButton("🔍 البحث", callback_data="search"), InlineKeyboardButton("📁 الملفات", callback_data="files")],
+        [InlineKeyboardButton("📊 الإحصائيات", callback_data="stats"), InlineKeyboardButton("📜 السجل", callback_data="history")],
+        [InlineKeyboardButton("💳 الاشتراك", callback_data="subscription"), InlineKeyboardButton("⚙️ الإعدادات", callback_data="settings")],
+        [InlineKeyboardButton("❓ المساعدة", callback_data="help"), InlineKeyboardButton("🆔 معلوماتي", callback_data="myinfo")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    load_codes()
+    load_all_data()
     user_id = update.effective_user.id
-    user_code = context.user_data.get("access_code")
     first_name = update.effective_user.first_name
     
-    if user_code:
-        valid, msg = is_code_valid(user_id, user_code)
-        status = "✅ مصرح" if valid else f"❌ {msg}"
-        status_emoji = "🟢" if valid else "🔴"
-    else:
-        status = "⚠️ محتاج كود"
-        status_emoji = "🟡"
+    # إضافة المستخدم للقاعدة
+    if str(user_id) not in USERS_DB:
+        USERS_DB[str(user_id)] = {
+            "first_name": first_name,
+            "joined": datetime.now().isoformat(),
+            "status": "free",
+            "searches": 0,
+            "access_code": None
+        }
+        save_all_data()
     
-    welcome_msg = (
-        f"سلام يا {first_name}! 👋\n\n"
-        f"{status_emoji} الحالة: {status}\n\n"
-        f"🤖 بوت البحث المتقدم v2.0\n\n"
-        f"📋 الأوامر الرئيسية:\n"
-        f"🎟️ /redeem <كود>\n"
-        f"📁 /files\n"
-        f"🔍 /search <كلمة>\n"
-        f"⏹️ /stop\n"
-        f"🗑️ /reset\n"
-        f"❓ /help\n"
-        f"🆔 /myid\n\n"
-        f"📎 ابعثلي رابط Google Drive\n"
+    user_data = USERS_DB[str(user_id)]
+    access_code = context.user_data.get("access_code")
+    
+    if access_code:
+        valid, msg = is_code_valid(user_id, access_code)
+        status_emoji = "🟢 مصرح" if valid else f"🔴 {msg}"
+    else:
+        status_emoji = "🟡 بحاجة لكود"
+    
+    welcome_text = (
+        f"╔═══════════════════════════════════╗\n"
+        f"║   🤖 بوت البحث المتقدم v4.0 ⚡   ║\n"
+        f"║                                   ║\n"
+        f"║        مرحباً {first_name} 👋         ║\n"
+        f"╚═══════════════════════════════════╝\n\n"
+        f"📊 حالتك: {status_emoji}\n"
+        f"🔎 عدد البحثيات: {user_data['searches']}\n"
+        f"📅 تاريخ الانضمام: {user_data['joined'][:10]}\n\n"
+        f"🎯 اختر من الخيارات أدناه للبدء!"
     )
     
-    await update.message.reply_text(welcome_msg)
+    await update.message.reply_text(welcome_text, reply_markup=get_main_menu())
 
-async def redeem(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """استخدم كود الوصول"""
-    load_codes()
-    user_id = update.effective_user.id
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
     
-    if not context.args:
-        await update.message.reply_text("❌ استعمل: /redeem <الكود>")
-        return
+    if query.data == "search":
+        await query.edit_message_text(
+            text="🔍 *وضع البحث*\n\n"
+            "📝 أرسل الكلمة التي تريد البحث عنها:\n\n"
+            "💡 نصيحة: يمكنك البحث في عدة كلمات بفاصل عنقود",
+            parse_mode="Markdown"
+        )
+        context.user_data["mode"] = "search"
     
-    code = context.args[0]
-    valid, msg = is_code_valid(user_id, code)
+    elif query.data == "files":
+        if not context.user_data.get("files_loaded"):
+            await query.edit_message_text(
+                text="📁 *إدارة الملفات*\n\n"
+                "❌ لم تحمل أي ملفات حتى الآن\n\n"
+                "📎 أرسل رابط Google Drive لتحميل ZIP file"
+            )
+        else:
+            txt_files = list(Path(DATA_DIR).rglob("*.txt"))
+            await query.edit_message_text(
+                text=f"📁 *الملفات المحملة*\n\n"
+                f"📊 عدد الملفات: {len(txt_files)}\n\n"
+                f"✅ جاهز للبحث!"
+            )
     
-    if not valid:
-        await update.message.reply_text(msg)
-        return
-    
-    context.user_data["access_code"] = code
-    ACCESS_CODES[code]["used_count"] += 1
-    save_codes()
-    
-    if ADMIN_ID:
-        remaining = ACCESS_CODES[code]["max_uses"] - ACCESS_CODES[code]["used_count"]
-        remaining_text = f"({remaining} مرات متبقية)" if remaining > 0 else "(استنفذ الحد الأقصى)"
-        await context.bot.send_message(
-            ADMIN_ID,
-            f"🔓 كود جديد دخل!\n\n"
-            f"👤 المستخدم: {update.effective_user.mention_html()}\n"
-            f"🎟️ الكود: {code}\n"
-            f"⏰ الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"📊 الاستخدامات: {remaining_text}",
-            parse_mode="HTML"
+    elif query.data == "stats":
+        load_all_data()
+        user_id = str(update.effective_user.id)
+        user_data = USERS_DB.get(user_id, {})
+        await query.edit_message_text(
+            text=f"📊 *إحصائياتك*\n\n"
+            f"🔍 عدد البحثيات: {user_data.get('searches', 0)}\n"
+            f"📅 في المنصة: {user_data.get('joined', 'N/A')[:10]}\n"
+            f"💾 حجم البيانات: N/A\n"
+            f"⭐ النقاط: {user_data.get('searches', 0) * 10}"
         )
     
-    success_msg = (
-        f"✅ نجح!\n\n"
-        f"🎟️ الكود: {code}\n"
-        f"📊 الحالة: مفعل\n"
-        f"🟢 جاهز للبحث!\n\n"
-        f"اكتب /search <كلمة> باش تبدا"
-    )
+    elif query.data == "history":
+        await query.edit_message_text(
+            text="📜 *سجل البحث*\n\n"
+            "📝 آخر 10 بحثيات:\n\n"
+            "لا توجد بحثيات سابقة"
+        )
     
-    await update.message.reply_text(success_msg)
+    elif query.data == "subscription":
+        keyboard = [
+            [InlineKeyboardButton("🎁 خطة مجانية", callback_data="plan_free"), InlineKeyboardButton("⭐ خطة بريميوم", callback_data="plan_premium")],
+            [InlineKeyboardButton("👑 خطة Pro", callback_data="plan_pro")],
+            [InlineKeyboardButton("🔙 رجوع", callback_data="back")]
+        ]
+        await query.edit_message_text(
+            text="💳 *الاشتراكات والخطط*\n\n"
+            "🎁 *خطة مجانية*\n"
+            "  ✓ بحث أساسي\n"
+            "  ✓ ملف واحد فقط\n\n"
+            "⭐ *خطة بريميوم* ($4.99/شهر)\n"
+            "  ✓ بحث متقدم\n"
+            "  ✓ 5 ملفات\n"
+            "  ✓ تصدير النتائج\n\n"
+            "👑 *خطة Pro* ($9.99/شهر)\n"
+            "  ✓ بحث ذكي\n"
+            "  ✓ ملفات غير محدودة\n"
+            "  ✓ أولوية دعم",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    elif query.data == "settings":
+        keyboard = [
+            [InlineKeyboardButton("🎟️ إدخال كود", callback_data="enter_code"), InlineKeyboardButton("🗣️ اللغة", callback_data="language")],
+            [InlineKeyboardButton("🔔 التنبيهات", callback_data="notifications")],
+            [InlineKeyboardButton("🔙 رجوع", callback_data="back")]
+        ]
+        await query.edit_message_text(
+            text="⚙️ *الإعدادات*\n\n"
+            "🎛️ اختر الإعداد الذي تريد تغييره:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    elif query.data == "enter_code":
+        await query.edit_message_text(
+            text="🎟️ *إدخال كود الوصول*\n\n"
+            "📝 أرسل الكود الخاص بك:"
+        )
+        context.user_data["mode"] = "redeem"
+    
+    elif query.data == "help":
+        await query.edit_message_text(
+            text="❓ *المساعدة والدعم*\n\n"
+            "📖 الأوامر الرئيسية:\n"
+            "/start - البدء\n"
+            "/search - البحث\n"
+            "/files - الملفات\n"
+            "/redeem - إدخال كود\n\n"
+            "💬 للتواصل: @support"
+        )
+    
+    elif query.data == "myinfo":
+        user = update.effective_user
+        await query.edit_message_text(
+            text=f"🆔 *معلوماتك*\n\n"
+            f"👤 الاسم: {user.first_name}\n"
+            f"📱 ID: `{user.id}`\n"
+            f"⭐ الحالة: عضو نشط\n"
+            f"📊 الرصيد: 0"
+        )
+    
+    elif query.data == "back":
+        await query.edit_message_text(
+            text="🏠 *القائمة الرئيسية*",
+            reply_markup=get_main_menu()
+        )
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """التعامل مع الرسائل النصية"""
-    load_codes()
+    load_all_data()
     user_id = update.effective_user.id
     text = update.message.text.strip()
+    mode = context.user_data.get("mode", "normal")
     
-    user_code = context.user_data.get("access_code")
-    if not user_code:
+    if mode == "redeem":
+        valid, msg = is_code_valid(user_id, text)
+        if not valid:
+            await update.message.reply_text(f"❌ {msg}")
+            return
+        
+        context.user_data["access_code"] = text
+        ACCESS_CODES[text]["used_count"] += 1
+        save_all_data()
+        
         await update.message.reply_text(
-            "⚠️ محتاج تدخل كود أولاً\n\n"
-            "استعمل: /redeem <الكود>"
+            f"✅ تم تفعيل الكود!\n\n"
+            f"🎟️ الكود: {text}\n"
+            f"🟢 جاهز للبحث الآن",
+            reply_markup=get_main_menu()
         )
-        return
-    
-    valid, msg = is_code_valid(user_id, user_code)
-    if not valid:
-        await update.message.reply_text(msg)
-        context.user_data.pop("access_code", None)
+        context.user_data["mode"] = "normal"
         return
     
     if "drive.google.com" in text:
         file_id = extract_drive_id(text)
         if not file_id:
-            await update.message.reply_text("❌ الرابط ما صحيحش. تحقق منو وعاود.")
+            await update.message.reply_text("❌ رابط غير صحيح")
             return
-
-        progress_msg = await update.message.reply_text(
-            "⬇️ بدات نحمل الـ ZIP...\n"
-            "هاد العملية تاخد وقت (3GB كبيرة)\n\n"
-            "صبر شوية... ⏳"
-        )
-
+        
+        msg = await update.message.reply_text("⬇️ جاري تحميل الملف...\n⏳ قد يستغرق بعض الوقت")
+        
         try:
             url = f"https://drive.google.com/uc?id={file_id}"
             gdown.download(url, ZIP_FILE, quiet=False, fuzzy=True)
-
-            await progress_msg.edit_text(
-                "🔄 كنستخرج الـ TXT files...\n"
-                "صبر شوية..."
-            )
-
+            
+            await msg.edit_text("🔄 جاري استخراج الملفات...")
+            
             if os.path.exists(DATA_DIR):
                 shutil.rmtree(DATA_DIR)
             os.makedirs(DATA_DIR, exist_ok=True)
-
+            
             with zipfile.ZipFile(ZIP_FILE, 'r') as zip_ref:
                 zip_ref.extractall(DATA_DIR)
-
+            
             txt_files = list(Path(DATA_DIR).rglob("*.txt"))
             total_lines = 0
             for txt_file in txt_files:
@@ -195,160 +300,106 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         total_lines += sum(1 for _ in f)
                 except:
                     pass
-
+            
             context.user_data["files_loaded"] = True
             
-            success_msg = (
-                f"✅ تحمل بنجاح!\n\n"
-                f"📄 عدد الـ TXT files: {len(txt_files)}\n"
-                f"📊 عدد الليني: {total_lines:,}\n\n"
-                f"🔍 بعثلي الكلمة اللي بغيتي تبحث عليها الآن"
+            await msg.edit_text(
+                f"✅ تم التحميل بنجاح! 🎉\n\n"
+                f"📄 عدد الملفات: {len(txt_files)}\n"
+                f"📊 عدد السطور: {total_lines:,}\n\n"
+                f"🔍 جاهز للبحث!"
             )
-            
-            await progress_msg.edit_text(success_msg)
-
         except Exception as e:
-            await progress_msg.edit_text(
-                f"❌ مشكل:\n{str(e)[:100]}\n\n"
-                "تحقق أن الفايل ZIP وأنو shared"
-            )
+            await msg.edit_text(f"❌ خطأ: {str(e)[:50]}")
         return
-
-    if not context.user_data.get("files_loaded"):
-        await update.message.reply_text(
-            "❌ ما عندي ZIP محفوظ.\n\n"
-            "بعثلي رابط Google Drive أولاً"
+    
+    if mode == "search" or context.user_data.get("files_loaded"):
+        if not context.user_data.get("files_loaded"):
+            await update.message.reply_text("❌ لم تحمل ملفات حتى الآن")
+            return
+        
+        keyword = text
+        search_msg = await update.message.reply_text(f"🔍 بحث عن: *{keyword}*\n⏳ جاري البحث...")
+        
+        results = []
+        try:
+            txt_files = list(Path(DATA_DIR).rglob("*.txt"))
+            for txt_file in txt_files:
+                try:
+                    with open(txt_file, "r", encoding="utf-8", errors="ignore") as f:
+                        for line in f:
+                            if keyword.lower() in line.lower():
+                                results.append(line.rstrip("\n"))
+                except:
+                    pass
+        except Exception as e:
+            await search_msg.edit_text(f"❌ خطأ: {e}")
+            return
+        
+        if not results:
+            await search_msg.edit_text(f"😕 لم نجد نتائج عن: *{keyword}*")
+            return
+        
+        # حفظ في قاعدة البيانات
+        user_data = USERS_DB[str(user_id)]
+        user_data["searches"] += 1
+        save_all_data()
+        
+        result_file = "resultat.txt"
+        with open(result_file, "w", encoding="utf-8") as f:
+            f.write(f"{'='*60}\n")
+            f.write(f"نتائج البحث عن: {keyword}\n")
+            f.write(f"عدد النتائج: {len(results):,}\n")
+            f.write(f"التاريخ: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"{'='*60}\n\n")
+            for i, line in enumerate(results[:5000], 1):
+                f.write(f"{i}. {line}\n")
+            if len(results) > 5000:
+                f.write(f"\n... و {len(results) - 5000:,} نتيجة أخرى")
+        
+        await search_msg.edit_text(
+            f"✅ تم البحث بنجاح! 🎉\n\n"
+            f"🔍 البحث عن: *{keyword}*\n"
+            f"📊 النتائج: *{len(results):,}*\n"
+            f"⏱️ الوقت: {datetime.now().strftime('%H:%M:%S')}"
         )
-        return
-
-    keyword = text
-    search_msg = await update.message.reply_text(
-        f"🔍 كنبحث عن: {keyword}\n\n"
-        f"صبر شوية..."
-    )
-
-    results = []
-    try:
-        txt_files = list(Path(DATA_DIR).rglob("*.txt"))
-        for txt_file in txt_files:
-            try:
-                with open(txt_file, "r", encoding="utf-8", errors="ignore") as f:
-                    for line in f:
-                        if keyword.lower() in line.lower():
-                            results.append(line.rstrip("\n"))
-            except:
-                pass
-    except Exception as e:
-        await search_msg.edit_text(f"❌ خطأ: {e}")
-        return
-
-    if not results:
-        await search_msg.edit_text(f"😕 ما لقيت والو على: {keyword}")
-        return
-
-    result_file = "resultat.txt"
-    with open(result_file, "w", encoding="utf-8") as f:
-        f.write(f"نتائج البحث عن: {keyword}\n")
-        f.write(f"عدد النتائج: {len(results):,}\n")
-        f.write("=" * 50 + "\n\n")
-        for i, line in enumerate(results[:5000], 1):
-            f.write(f"{i}. {line}\n")
-        if len(results) > 5000:
-            f.write(f"\n... و {len(results) - 5000:,} نتيجة أخرى")
-
-    result_msg = (
-        f"✅ تم البحث بنجاح!\n\n"
-        f"🔍 الكلمة: {keyword}\n"
-        f"📊 عدد النتائج: {len(results):,}"
-    )
-    
-    await search_msg.edit_text(result_msg)
-    
-    await update.message.reply_document(
-        document=open(result_file, "rb"),
-        filename=f"results_{keyword.replace(' ', '_')}.txt",
-        caption=f"✅ النتائج ({len(results):,}):"
-    )
-
-async def files_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """عرض الفايلات"""
-    if not context.user_data.get("files_loaded"):
-        await update.message.reply_text(
-            "❌ ما كاين فايلات محملة\n\n"
-            "بعثلي رابط Google Drive أولاً"
+        
+        await update.message.reply_document(
+            document=open(result_file, "rb"),
+            filename=f"results_{keyword}.txt",
+            caption=f"📥 النتائج ({len(results):,})"
         )
-        return
-    
-    txt_files = list(Path(DATA_DIR).rglob("*.txt"))
-    files_list = "\n".join([f"📄 {f.name}" for f in txt_files[:20]])
-    
-    msg = (
-        f"📁 الفايلات المحملة:\n\n"
-        f"📊 عدد الـ TXT files: {len(txt_files)}\n\n"
-        f"📋 قائمة الفايلات:\n"
-        f"{files_list}"
-    )
-    
-    if len(txt_files) > 20:
-        msg += f"\n\n... و {len(txt_files) - 20} فايلات أخرى"
-    
-    await update.message.reply_text(msg)
-
-async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """إيقاف العملية"""
-    await update.message.reply_text("⏹️ تم إيقاف العملية ✅")
-
-async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """إعادة تعيين"""
-    context.user_data.pop("files_loaded", None)
-    await update.message.reply_text("🗑️ تم مسح النتائج المؤقتة ✅")
 
 async def myid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """عرض ID ديالك"""
     user_id = update.effective_user.id
-    msg = (
-        f"🔑 معرفك الفريد:\n\n"
-        f"ID: {user_id}\n\n"
-        f"نسخ الرقم واستعمله في ADMIN_ID"
+    await update.message.reply_text(
+        f"🔑 معرفك الفريد:\n\n`{user_id}`"
     )
-    await update.message.reply_text(msg)
 
 async def addcode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """إضافة كود جديد (Admin فقط)"""
-    load_codes()
+    load_all_data()
     user_id = update.effective_user.id
     
     if user_id != ADMIN_ID:
-        await update.message.reply_text("❌ هاد الأمر للـ Admin فقط")
+        await update.message.reply_text("❌ Admin only")
         return
     
     if len(context.args) < 3:
-        await update.message.reply_text(
-            "❌ الاستخدام الصحيح:\n\n"
-            "/addcode <الكود> <عدد_المرات> <تاريخ_الانتهاء>\n\n"
-            "أمثلة:\n"
-            "/addcode CODE123 10 2026-12-31\n"
-            "/addcode UNLOCK 5 2026-06-30"
-        )
+        await update.message.reply_text("/addcode <code> <uses> <expiry>")
         return
     
     code = context.args[0]
     try:
         max_uses = int(context.args[1])
     except:
-        await update.message.reply_text("❌ عدد المرات محتاج يكون رقم")
+        await update.message.reply_text("❌ عدد المرات يجب أن يكون رقم")
         return
     
-    try:
-        expiry_date = context.args[2]
-        datetime.strptime(expiry_date, "%Y-%m-%d")
-        expires_at = f"{expiry_date}T23:59:59"
-    except:
-        await update.message.reply_text("❌ التاريخ محتاج يكون بالشكل: YYYY-MM-DD")
-        return
+    expiry_date = context.args[2]
+    expires_at = f"{expiry_date}T23:59:59"
     
     if code in ACCESS_CODES:
-        await update.message.reply_text(f"❌ الكود '{code}' موجود دابا")
+        await update.message.reply_text(f"❌ الكود موجود")
         return
     
     ACCESS_CODES[code] = {
@@ -356,101 +407,24 @@ async def addcode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "used_count": 0,
         "expires_at": expires_at
     }
-    save_codes()
+    save_all_data()
     
-    msg = (
-        f"✅ كود جديد تم إنشاؤه\n\n"
+    await update.message.reply_text(
+        f"✅ تم إنشاء كود جديد\n\n"
         f"🎟️ الكود: {code}\n"
-        f"📊 عدد المرات: {max_uses}\n"
-        f"📅 ينتهي: {expiry_date}\n\n"
-        f"المستخدمون يقدرو يدخلو بـ:\n"
-        f"/redeem {code}"
+        f"📊 المرات: {max_uses}\n"
+        f"📅 انتهاء: {expiry_date}"
     )
-    
-    await update.message.reply_text(msg)
-
-async def codes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """عرض جميع الأكواس (Admin فقط)"""
-    load_codes()
-    user_id = update.effective_user.id
-    
-    if user_id != ADMIN_ID:
-        await update.message.reply_text("❌ هاد الأمر للـ Admin فقط")
-        return
-    
-    if not ACCESS_CODES:
-        await update.message.reply_text("❌ ما كاين أكواس")
-        return
-    
-    msg = "📋 جميع الأكواس:\n\n"
-    
-    for code, data in ACCESS_CODES.items():
-        remaining = data["max_uses"] - data["used_count"]
-        expires = data["expires_at"][:10] if data["expires_at"] else "∞"
-        status = "🟢" if remaining > 0 else "🔴"
-        
-        msg += (
-            f"{status} {code}\n"
-            f"   الاستخدام: {data['used_count']}/{data['max_uses']}\n"
-            f"   المتبقي: {remaining}\n"
-            f"   ينتهي: {expires}\n\n"
-        )
-    
-    await update.message.reply_text(msg)
-
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """عرض جميع الأوامر"""
-    user_id = update.effective_user.id
-    is_admin = user_id == ADMIN_ID
-    
-    help_text = (
-        f"📖 قائمة الأوامر\n\n"
-        
-        f"🟢 أوامر عامة:\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"• /start — ابدأ من هنا\n"
-        f"• /myid — اعرض ID ديالك\n"
-        f"• /redeem <كود> — استخدم كود\n"
-        f"• /search <كلمة> — ابحث\n"
-        f"• /files — الفايلات\n"
-        f"• /reset — مسح النتائج\n"
-        f"• /stop — إيقاف\n"
-        f"• /help — هاد الرسالة\n\n"
-    )
-    
-    if is_admin:
-        help_text += (
-            f"🔴 أوامر Admin:\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"• /addcode <كود> <مرات> <تاريخ>\n"
-            f"• /codes — عرض جميع الأكواس\n\n"
-        )
-    
-    help_text += (
-        f"📖 كيفاش تستعمل:\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"1️⃣ /redeem CODE\n"
-        f"2️⃣ بعت رابط ZIP من Drive\n"
-        f"3️⃣ /search كلمة\n"
-        f"4️⃣ حصل على النتائج ✅"
-    )
-    
-    await update.message.reply_text(help_text)
 
 def main():
-    load_codes()
+    load_all_data()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("redeem", redeem))
-    app.add_handler(CommandHandler("files", files_cmd))
-    app.add_handler(CommandHandler("stop", stop_cmd))
-    app.add_handler(CommandHandler("reset", reset_cmd))
     app.add_handler(CommandHandler("myid", myid_cmd))
     app.add_handler(CommandHandler("addcode", addcode_cmd))
-    app.add_handler(CommandHandler("codes", codes_cmd))
-    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    print("🚀 البوت شغال! ✅")
+    print("🚀 بوت البحث شغال! ✅")
     app.run_polling()
 
 if __name__ == "__main__":
