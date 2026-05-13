@@ -5,7 +5,6 @@ import gdown
 import zipfile
 import shutil
 import json
-import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
 from telegram import Update
@@ -20,9 +19,6 @@ ZIP_FILE = "data.zip"
 CODES_FILE = "access_codes.json"
 
 ACCESS_CODES = {}
-
-# Emoji animations
-LOADING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 def load_codes():
     """حمل الأكواد من الملف"""
@@ -84,26 +80,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_emoji = "🟡"
     
     welcome_msg = (
-        f"╔══════════════════════════╗\n"
-        f"║  سلام يا {first_name}! 👋      ║\n"
-        f"╚══════════════════════════╝\n\n"
+        f"سلام يا {first_name}! 👋\n\n"
         f"{status_emoji} الحالة: {status}\n\n"
         f"🤖 بوت البحث المتقدم v2.0\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"📋 الأوامر الرئيسية:\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🎟️  /redeem <كود>\n"
+        f"🎟️ /redeem <كود>\n"
         f"📁 /files\n"
         f"🔍 /search <كلمة>\n"
-        f"⏹️  /stop\n"
-        f"🗑️  /reset\n"
+        f"⏹️ /stop\n"
+        f"🗑️ /reset\n"
         f"❓ /help\n"
         f"🆔 /myid\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"📎 ابعثلي رابط Google Drive\n"
     )
     
-    await update.message.reply_text(welcome_msg, parse_mode="HTML")
+    await update.message.reply_text(welcome_msg)
 
 async def redeem(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """استخدم كود الوصول"""
@@ -115,15 +106,10 @@ async def redeem(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     code = context.args[0]
-    
-    status_msg = await update.message.reply_text("⏳ كنتحقق من الكود...")
-    
-    await asyncio.sleep(0.5)
-    
     valid, msg = is_code_valid(user_id, code)
     
     if not valid:
-        await status_msg.edit_text(f"❌ {msg}")
+        await update.message.reply_text(msg)
         return
     
     context.user_data["access_code"] = code
@@ -137,23 +123,21 @@ async def redeem(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ADMIN_ID,
             f"🔓 كود جديد دخل!\n\n"
             f"👤 المستخدم: {update.effective_user.mention_html()}\n"
-            f"🎟️  الكود: <code>{code}</code>\n"
+            f"🎟️ الكود: {code}\n"
             f"⏰ الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"📊 الاستخدامات: {remaining_text}",
             parse_mode="HTML"
         )
     
     success_msg = (
-        f"╔══════════════════════════╗\n"
-        f"║     ✅ نجح! 🎉          ║\n"
-        f"╚══════════════════════════╝\n\n"
-        f"🎟️  الكود: <code>{code}</code>\n"
+        f"✅ نجح!\n\n"
+        f"🎟️ الكود: {code}\n"
         f"📊 الحالة: مفعل\n"
         f"🟢 جاهز للبحث!\n\n"
         f"اكتب /search <كلمة> باش تبدا"
     )
     
-    await status_msg.edit_text(success_msg, parse_mode="HTML")
+    await update.message.reply_text(success_msg)
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """التعامل مع الرسائل النصية"""
@@ -164,7 +148,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_code = context.user_data.get("access_code")
     if not user_code:
         await update.message.reply_text(
-            "⚠️  محتاج تدخل كود أولاً\n\n"
+            "⚠️ محتاج تدخل كود أولاً\n\n"
             "استعمل: /redeem <الكود>"
         )
         return
@@ -182,7 +166,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         progress_msg = await update.message.reply_text(
-            "⬇️  بدات نحمل الـ ZIP...\n"
+            "⬇️ بدات نحمل الـ ZIP...\n"
             "هاد العملية تاخد وقت (3GB كبيرة)\n\n"
             "صبر شوية... ⏳"
         )
@@ -215,23 +199,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["files_loaded"] = True
             
             success_msg = (
-                f"╔══════════════════════════╗\n"
-                f"║   ✅ تحمل بنجاح! 🎉    ║\n"
-                f"╚══════════════════════════╝\n\n"
+                f"✅ تحمل بنجاح!\n\n"
                 f"📄 عدد الـ TXT files: {len(txt_files)}\n"
                 f"📊 عدد الليني: {total_lines:,}\n\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🔍 بعثلي الكلمة اللي بغيتي\n"
-                f"تبحث عليها الآن"
+                f"🔍 بعثلي الكلمة اللي بغيتي تبحث عليها الآن"
             )
             
             await progress_msg.edit_text(success_msg)
 
         except Exception as e:
             await progress_msg.edit_text(
-                f"❌ مشكل:\n<code>{str(e)[:100]}</code>\n\n"
-                "تحقق أن الفايل ZIP وأنو shared",
-                parse_mode="HTML"
+                f"❌ مشكل:\n{str(e)[:100]}\n\n"
+                "تحقق أن الفايل ZIP وأنو shared"
             )
         return
 
@@ -244,15 +223,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyword = text
     search_msg = await update.message.reply_text(
-        f"🔍 كنبحث عن: <code>{keyword}</code>\n\n"
-        f"صبر شوية... {LOADING_FRAMES[0]}",
-        parse_mode="HTML"
+        f"🔍 كنبحث عن: {keyword}\n\n"
+        f"صبر شوية..."
     )
 
     results = []
     try:
         txt_files = list(Path(DATA_DIR).rglob("*.txt"))
-        for i, txt_file in enumerate(txt_files):
+        for txt_file in txt_files:
             try:
                 with open(txt_file, "r", encoding="utf-8", errors="ignore") as f:
                     for line in f:
@@ -260,49 +238,31 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             results.append(line.rstrip("\n"))
             except:
                 pass
-            
-            if i % 5 == 0:
-                frame = LOADING_FRAMES[i % len(LOADING_FRAMES)]
-                await search_msg.edit_text(
-                    f"🔍 كنبحث عن: <code>{keyword}</code>\n\n"
-                    f"صبر شوية... {frame}",
-                    parse_mode="HTML"
-                )
     except Exception as e:
         await search_msg.edit_text(f"❌ خطأ: {e}")
         return
 
     if not results:
-        await search_msg.edit_text(
-            f"😕 ما لقيت والو على:\n"
-            f"<code>{keyword}</code>",
-            parse_mode="HTML"
-        )
+        await search_msg.edit_text(f"😕 ما لقيت والو على: {keyword}")
         return
 
     result_file = "resultat.txt"
     with open(result_file, "w", encoding="utf-8") as f:
-        f.write(f"{'='*50}\n")
         f.write(f"نتائج البحث عن: {keyword}\n")
-        f.write(f"{'='*50}\n")
         f.write(f"عدد النتائج: {len(results):,}\n")
-        f.write(f"تاريخ البحث: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"{'='*50}\n\n")
+        f.write("=" * 50 + "\n\n")
         for i, line in enumerate(results[:5000], 1):
             f.write(f"{i}. {line}\n")
         if len(results) > 5000:
             f.write(f"\n... و {len(results) - 5000:,} نتيجة أخرى")
 
     result_msg = (
-        f"╔══════════════════════════╗\n"
-        f"║   ✅ تم البحث بنجاح! 🎉  ║\n"
-        f"╚══════════════════════════╝\n\n"
-        f"🔍 الكلمة: <code>{keyword}</code>\n"
-        f"📊 عدد النتائج: <b>{len(results):,}</b>\n"
-        f"📅 الوقت: {datetime.now().strftime('%H:%M:%S')}"
+        f"✅ تم البحث بنجاح!\n\n"
+        f"🔍 الكلمة: {keyword}\n"
+        f"📊 عدد النتائج: {len(results):,}"
     )
     
-    await search_msg.edit_text(result_msg, parse_mode="HTML")
+    await search_msg.edit_text(result_msg)
     
     await update.message.reply_document(
         document=open(result_file, "rb"),
@@ -323,9 +283,7 @@ async def files_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     files_list = "\n".join([f"📄 {f.name}" for f in txt_files[:20]])
     
     msg = (
-        f"╔══════════════════════════╗\n"
-        f"║   📁 الفايلات المحملة    ║\n"
-        f"╚══════════════════════════╝\n\n"
+        f"📁 الفايلات المحملة:\n\n"
         f"📊 عدد الـ TXT files: {len(txt_files)}\n\n"
         f"📋 قائمة الفايلات:\n"
         f"{files_list}"
@@ -338,24 +296,22 @@ async def files_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """إيقاف العملية"""
-    await update.message.reply_text("⏹️  تم إيقاف العملية ✅")
+    await update.message.reply_text("⏹️ تم إيقاف العملية ✅")
 
 async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """إعادة تعيين"""
     context.user_data.pop("files_loaded", None)
-    await update.message.reply_text("🗑️  تم مسح النتائج المؤقتة ✅")
+    await update.message.reply_text("🗑️ تم مسح النتائج المؤقتة ✅")
 
 async def myid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """عرض ID ديالك"""
     user_id = update.effective_user.id
     msg = (
-        f"╔══════════════════════════╗\n"
-        f"║    🔑 معرفك الفريد      ║\n"
-        f"╚══════════════════════════╝\n\n"
-        f"ID: <code>{user_id}</code>\n\n"
+        f"🔑 معرفك الفريد:\n\n"
+        f"ID: {user_id}\n\n"
         f"نسخ الرقم واستعمله في ADMIN_ID"
     )
-    await update.message.reply_text(msg, parse_mode="HTML")
+    await update.message.reply_text(msg)
 
 async def addcode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """إضافة كود جديد (Admin فقط)"""
@@ -369,11 +325,10 @@ async def addcode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 3:
         await update.message.reply_text(
             "❌ الاستخدام الصحيح:\n\n"
-            "<code>/addcode <الكود> <عدد_المرات> <تاريخ_الانتهاء></code>\n\n"
+            "/addcode <الكود> <عدد_المرات> <تاريخ_الانتهاء>\n\n"
             "أمثلة:\n"
-            "<code>/addcode CODE123 10 2026-12-31</code>\n"
-            "<code>/addcode UNLOCK 5 2026-06-30</code>",
-            parse_mode="HTML"
+            "/addcode CODE123 10 2026-12-31\n"
+            "/addcode UNLOCK 5 2026-06-30"
         )
         return
     
@@ -404,18 +359,15 @@ async def addcode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_codes()
     
     msg = (
-        f"╔══════════════════════════╗\n"
-        f"║   ✅ كود جديد تم إنشاؤه  ║\n"
-        f"╚══════════════════════════╝\n\n"
-        f"🎟️  الكود: <code>{code}</code>\n"
+        f"✅ كود جديد تم إنشاؤه\n\n"
+        f"🎟️ الكود: {code}\n"
         f"📊 عدد المرات: {max_uses}\n"
         f"📅 ينتهي: {expiry_date}\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"المستخدمون يقدرو يدخلو بـ:\n"
-        f"<code>/redeem {code}</code>"
+        f"/redeem {code}"
     )
     
-    await update.message.reply_text(msg, parse_mode="HTML")
+    await update.message.reply_text(msg)
 
 async def codes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """عرض جميع الأكواس (Admin فقط)"""
@@ -430,11 +382,7 @@ async def codes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ ما كاين أكواس")
         return
     
-    msg = (
-        f"╔══════════════════════════╗\n"
-        f"║    📋 جميع الأكواس      ║\n"
-        f"╚══════════════════════════╝\n\n"
-    )
+    msg = "📋 جميع الأكواس:\n\n"
     
     for code, data in ACCESS_CODES.items():
         remaining = data["max_uses"] - data["used_count"]
@@ -442,13 +390,13 @@ async def codes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status = "🟢" if remaining > 0 else "🔴"
         
         msg += (
-            f"{status} <code>{code}</code>\n"
-            f"   📊 الاستخدام: {data['used_count']}/{data['max_uses']}\n"
-            f"   📈 المتبقي: {remaining}\n"
-            f"   📅 ينتهي: {expires}\n\n"
+            f"{status} {code}\n"
+            f"   الاستخدام: {data['used_count']}/{data['max_uses']}\n"
+            f"   المتبقي: {remaining}\n"
+            f"   ينتهي: {expires}\n\n"
         )
     
-    await update.message.reply_text(msg, parse_mode="HTML")
+    await update.message.reply_text(msg)
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """عرض جميع الأوامر"""
@@ -456,16 +404,14 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_admin = user_id == ADMIN_ID
     
     help_text = (
-        f"╔══════════════════════════╗\n"
-        f"║   📖 قائمة الأوامر      ║\n"
-        f"╚══════════════════════════╝\n\n"
+        f"📖 قائمة الأوامر\n\n"
         
-        f"🟢 <b>أوامر عامة:</b>\n"
+        f"🟢 أوامر عامة:\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"• /start — ابدأ من هنا\n"
         f"• /myid — اعرض ID ديالك\n"
-        f"• /redeem &lt;كود&gt; — استخدم كود\n"
-        f"• /search &lt;كلمة&gt; — ابحث\n"
+        f"• /redeem <كود> — استخدم كود\n"
+        f"• /search <كلمة> — ابحث\n"
         f"• /files — الفايلات\n"
         f"• /reset — مسح النتائج\n"
         f"• /stop — إيقاف\n"
@@ -474,22 +420,22 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if is_admin:
         help_text += (
-            f"🔴 <b>أوامر Admin:</b>\n"
+            f"🔴 أوامر Admin:\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"• /addcode &lt;كود&gt; &lt;مرات&gt; &lt;تاريخ&gt;\n"
+            f"• /addcode <كود> <مرات> <تاريخ>\n"
             f"• /codes — عرض جميع الأكواس\n\n"
         )
     
     help_text += (
-        f"📖 <b>كيفاش تستعمل:</b>\n"
+        f"📖 كيفاش تستعمل:\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"1️⃣  /redeem CODE\n"
-        f"2️⃣  بعت رابط ZIP من Drive\n"
-        f"3️⃣  /search كلمة\n"
-        f"4️⃣  حصل على النتائج ✅"
+        f"1️⃣ /redeem CODE\n"
+        f"2️⃣ بعت رابط ZIP من Drive\n"
+        f"3️⃣ /search كلمة\n"
+        f"4️⃣ حصل على النتائج ✅"
     )
     
-    await update.message.reply_text(help_text, parse_mode="HTML")
+    await update.message.reply_text(help_text)
 
 def main():
     load_codes()
