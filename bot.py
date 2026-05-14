@@ -7,10 +7,9 @@ import shutil
 import json
 import time
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
@@ -30,41 +29,21 @@ USERS_DB = {}
 STATS = {}
 
 # ============================================================
-# ⚡ FAST INDEX WITH THREADING
+# INDEX
 # ============================================================
 SEARCH_INDEX = defaultdict(list)
 INDEX_BUILT = False
-INDEX_BUILDING = False          # ← guard flag: prevents concurrent builds
+INDEX_BUILDING = False
 INDEX_TOTAL_LINES = 0
 INDEX_LOCK = threading.Lock()
-
-
-def index_file(txt_file):
-    local_index = defaultdict(list)
-    line_count = 0
-    try:
-        with open(txt_file, "r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    line_count += 1
-                    parts = re.split(r'[\s:@|]+', line.lower())
-                    unique_parts = set(parts)
-                    for part in unique_parts:
-                        if len(part) >= 2:
-                            local_index[part].append(line)
-    except Exception as e:
-        logging.error(f"❌ خطأ في قراءة الملف: {e}")
-    return local_index, line_count
 
 
 def build_search_index():
     global SEARCH_INDEX, INDEX_BUILT, INDEX_BUILDING, INDEX_TOTAL_LINES
 
-    # ── Guard: block any concurrent / duplicate build ──
     with INDEX_LOCK:
         if INDEX_BUILDING:
-            logging.warning("⚠️ Index build already in progress – skipping duplicate call.")
+            logging.warning("⚠️ Index build already in progress – skipping.")
             return
         INDEX_BUILDING = True
         INDEX_BUILT = False
@@ -81,25 +60,27 @@ def build_search_index():
         return
 
     start_time = time.time()
-    max_workers = min(8, len(txt_files))
-    logging.info(f"🔄 بناء Index بـ {max_workers} threads للـ {len(txt_files)} ملف...")
+    logging.info(f"🔄 بناء Index بطريقة عادية لـ {len(txt_files)} ملف...")
 
     try:
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(index_file, f): f for f in txt_files}
-            for i, future in enumerate(as_completed(futures)):
-                try:
-                    local_index, line_count = future.result()
-                    with INDEX_LOCK:
-                        INDEX_TOTAL_LINES += line_count
-                        for key, lines in local_index.items():
-                            SEARCH_INDEX[key].extend(lines)
-                    percentage = ((i + 1) / len(txt_files)) * 100
-                    logging.info(f"✅ {i+1}/{len(txt_files)} ({percentage:.0f}%) - {line_count:,} سطر")
-                except Exception as e:
-                    logging.error(f"❌ خطأ في future: {e}")
+        for i, txt_file in enumerate(txt_files):
+            try:
+                with open(txt_file, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            INDEX_TOTAL_LINES += 1
+                            parts = set(re.split(r'[\s:@|]+', line.lower()))
+                            for part in parts:
+                                if len(part) >= 2:
+                                    SEARCH_INDEX[part].append(line)
+            except Exception as e:
+                logging.error(f"❌ خطأ في الملف {txt_file}: {e}")
+                continue
+
+            logging.info(f"✅ {i+1}/{len(txt_files)} - {txt_file.name}")
+
     finally:
-        # Always release the guard – even if an exception occurs mid-build
         elapsed = time.time() - start_time
         with INDEX_LOCK:
             INDEX_BUILT = True
@@ -173,15 +154,9 @@ def extract_drive_id(url):
 
 
 # ============================================================
-# AUTO LOAD ON STARTUP  (called ONCE from main())
+# AUTO LOAD ON STARTUP
 # ============================================================
 def auto_load_on_startup():
-    """
-    Runs once at startup.
-    - If saved_drives.json exists → download last link and build index.
-    - Else if extracted_files/ has TXTs → build index from existing files.
-    """
-    # Case 1: no saved drives file but local files exist
     if not os.path.exists(DRIVE_LINKS_FILE):
         if os.path.exists(DATA_DIR) and list(Path(DATA_DIR).rglob("*.txt")):
             logging.info("🔄 بناء Index من الملفات الموجودة...")
@@ -195,7 +170,6 @@ def auto_load_on_startup():
         return
 
     if not links:
-        # No links saved – check for local files
         if os.path.exists(DATA_DIR) and list(Path(DATA_DIR).rglob("*.txt")):
             logging.info("🔄 بناء Index من الملفات الموجودة...")
             build_search_index()
@@ -224,7 +198,7 @@ def auto_load_on_startup():
         with zipfile.ZipFile(ZIP_FILE, 'r') as z:
             z.extractall(DATA_DIR)
 
-        logging.info("⚡ بناء الـ Index بسرعة...")
+        logging.info("⚡ بناء الـ Index...")
         build_search_index()
         logging.info(f"✅ Auto-loaded: {INDEX_TOTAL_LINES:,} lines ready")
 
@@ -331,7 +305,6 @@ def get_drive_links_menu(links):
 # CORE DRIVE DOWNLOAD LOGIC
 # ============================================================
 async def download_and_index_drive(link, msg, context):
-    """تحميل ZIP من Google Drive وبناء الـ Index"""
     file_id = extract_drive_id(link)
     if not file_id:
         await msg.edit_text(
@@ -341,7 +314,6 @@ async def download_and_index_drive(link, msg, context):
         )
         return False
 
-    # ① تحميل الملف
     await msg.edit_text(
         "☁️ *جاري التحميل من Google Drive...*\n\n"
         "⏳ قد يستغرق بعض الوقت حسب حجم الملف",
@@ -374,7 +346,6 @@ async def download_and_index_drive(link, msg, context):
         )
         return False
 
-    # ② فك الضغط
     await msg.edit_text(
         f"📦 *تم التحميل!* ({file_size_mb:.1f} MB في {dl_time:.1f}s)\n\n"
         "🔄 جاري فك الضغط...",
@@ -412,7 +383,6 @@ async def download_and_index_drive(link, msg, context):
         )
         return False
 
-    # ③ بناء الـ Index
     await msg.edit_text(
         f"⚡ *جاري بناء الـ Index...*\n\n"
         f"📄 {len(txt_files)} ملف TXT",
@@ -420,11 +390,8 @@ async def download_and_index_drive(link, msg, context):
     )
 
     build_search_index()
-
-    # ④ حفظ الرابط
     save_drive_link(link)
 
-    # ⑤ رسالة النجاح
     await msg.edit_text(
         f"✅ *تم بنجاح!*\n\n"
         f"━━━━━━━━━━━━━━━\n"
@@ -737,7 +704,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             z.extractall(DATA_DIR)
 
         txt_files = list(Path(DATA_DIR).rglob("*.txt"))
-        await msg.edit_text(f"⚡ بناء Index سريع لـ {len(txt_files)} ملف...")
+        await msg.edit_text(f"⚡ بناء Index لـ {len(txt_files)} ملف...")
         build_search_index()
 
         await msg.edit_text(
@@ -816,11 +783,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================================
-# MAIN  –  auto_load_on_startup() called ONCE here only
+# MAIN
 # ============================================================
 def main():
     load_all_data()
-    auto_load_on_startup()          # ← single call, guarded inside
+    auto_load_on_startup()
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
