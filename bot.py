@@ -318,39 +318,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def reload_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("❌ Admin only")
-        return
-
-    await update.message.reply_text("🔄 جاري إعادة بناء الـ Index...")
-
-    if not os.path.exists(DATA_FILE):
-        await update.message.reply_text("❌ لا يوجد ملف محفوظ أولاً.")
-        return
-
-    build_search_index()
-
-    await update.message.reply_text(
-        "✅ تم إعادة بناء الـ Index بنجاح!\n⚡ Fast Search جاهز"
-    )
-
-
-async def drives_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("❌ Admin only")
-        return
-
-    await update.message.reply_text(
-        "📂 روابط التخزين المدعومة:\n\n"
-        "• Google Drive\n"
-        "• Gofile\n"
-        "• MEGA\n"
-        "• MediaFire\n"
-        "• Dropbox"
-    )
-
-
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -359,8 +326,6 @@ def main():
     app.add_handler(CommandHandler("stop", stop_command))
     app.add_handler(CommandHandler("redeem", redeem_command))
     app.add_handler(CommandHandler("gkey", gkey_command))
-    app.add_handler(CommandHandler("reload", reload_cmd))
-    app.add_handler(CommandHandler("drives", drives_cmd))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
