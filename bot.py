@@ -15,7 +15,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
+ADMIN_IDS = list(map(int, os.environ.get("ADMIN_IDS", "0").split(",")))
 DATA_DIR = "extracted_files"
 ZIP_FILE = "data.zip"
 CODES_FILE = "access_codes.json"
@@ -708,7 +708,7 @@ async def addcode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     load_all_data()
     user_id = update.effective_user.id
 
-    if user_id != ADMIN_ID:
+    if user_id not in ADMIN_IDS:
         await update.message.reply_text("❌ Admin only")
         return
 
@@ -745,7 +745,7 @@ async def indexinfo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def setdrive_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """أمر للأدمين لتغيير رابط Drive المحفوظ"""
     user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
+    if user_id not in ADMIN_IDS:
         await update.message.reply_text("❌ Admin only")
         return
 
