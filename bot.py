@@ -34,8 +34,10 @@ STATS = {}
 # ============================================================
 SEARCH_INDEX = defaultdict(list)
 INDEX_BUILT = False
+INDEX_BUILDING = False          # ← guard flag: prevents concurrent builds
 INDEX_TOTAL_LINES = 0
 INDEX_LOCK = threading.Lock()
+
 
 def index_file(txt_file):
     local_index = defaultdict(list)
@@ -51,56 +53,76 @@ def index_file(txt_file):
                     for part in unique_parts:
                         if len(part) >= 2:
                             local_index[part].append(line)
-    except:
-        pass
+    except Exception as e:
+        logging.error(f"❌ خطأ في قراءة الملف: {e}")
     return local_index, line_count
 
-def build_search_index():
-    global SEARCH_INDEX, INDEX_BUILT, INDEX_TOTAL_LINES
 
+def build_search_index():
+    global SEARCH_INDEX, INDEX_BUILT, INDEX_BUILDING, INDEX_TOTAL_LINES
+
+    # ── Guard: block any concurrent / duplicate build ──
     with INDEX_LOCK:
+        if INDEX_BUILDING:
+            logging.warning("⚠️ Index build already in progress – skipping duplicate call.")
+            return
+        INDEX_BUILDING = True
+        INDEX_BUILT = False
         SEARCH_INDEX = defaultdict(list)
         INDEX_TOTAL_LINES = 0
 
     txt_files = list(Path(DATA_DIR).rglob("*.txt"))
 
     if not txt_files:
-        INDEX_BUILT = True
+        with INDEX_LOCK:
+            INDEX_BUILT = True
+            INDEX_BUILDING = False
+        logging.info("📭 لا يوجد ملفات TXT للفهرسة.")
         return
 
     start_time = time.time()
     max_workers = min(8, len(txt_files))
     logging.info(f"🔄 بناء Index بـ {max_workers} threads للـ {len(txt_files)} ملف...")
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(index_file, f): f for f in txt_files}
-        for i, future in enumerate(as_completed(futures)):
-            try:
-                local_index, line_count = future.result()
-                with INDEX_LOCK:
-                    INDEX_TOTAL_LINES += line_count
-                    for key, lines in local_index.items():
-                        SEARCH_INDEX[key].extend(lines)
-                percentage = ((i + 1) / len(txt_files)) * 100
-                logging.info(f"✅ {i+1}/{len(txt_files)} ({percentage:.0f}%) - {line_count:,} سطر")
-            except Exception as e:
-                logging.error(f"❌ خطأ: {e}")
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(index_file, f): f for f in txt_files}
+            for i, future in enumerate(as_completed(futures)):
+                try:
+                    local_index, line_count = future.result()
+                    with INDEX_LOCK:
+                        INDEX_TOTAL_LINES += line_count
+                        for key, lines in local_index.items():
+                            SEARCH_INDEX[key].extend(lines)
+                    percentage = ((i + 1) / len(txt_files)) * 100
+                    logging.info(f"✅ {i+1}/{len(txt_files)} ({percentage:.0f}%) - {line_count:,} سطر")
+                except Exception as e:
+                    logging.error(f"❌ خطأ في future: {e}")
+    finally:
+        # Always release the guard – even if an exception occurs mid-build
+        elapsed = time.time() - start_time
+        with INDEX_LOCK:
+            INDEX_BUILT = True
+            INDEX_BUILDING = False
+        logging.info(
+            f"✅ Index built: {INDEX_TOTAL_LINES:,} lines, "
+            f"{len(SEARCH_INDEX):,} keys in {elapsed:.1f}s"
+        )
 
-    elapsed = time.time() - start_time
-    INDEX_BUILT = True
-    logging.info(f"✅ Index built: {INDEX_TOTAL_LINES:,} lines, {len(SEARCH_INDEX):,} keys in {elapsed:.1f}s")
 
 def fast_search(keyword):
     keyword_lower = keyword.lower()
     results = set()
-    if keyword_lower in SEARCH_INDEX:
-        for line in SEARCH_INDEX[keyword_lower]:
-            results.add(line)
-    for key in SEARCH_INDEX:
-        if keyword_lower in key or key in keyword_lower:
-            for line in SEARCH_INDEX[key]:
+    with INDEX_LOCK:
+        if keyword_lower in SEARCH_INDEX:
+            for line in SEARCH_INDEX[keyword_lower]:
                 results.add(line)
+        for key in SEARCH_INDEX:
+            if keyword_lower in key or key in keyword_lower:
+                for line in SEARCH_INDEX[key]:
+                    results.add(line)
     return list(results)
+
 
 # ============================================================
 # DRIVE LINKS MANAGEMENT
@@ -111,12 +133,13 @@ def save_drive_link(link):
         try:
             with open(DRIVE_LINKS_FILE) as f:
                 links = json.load(f)
-        except:
+        except Exception:
             links = []
     if link and link not in links:
         links.append(link)
     with open(DRIVE_LINKS_FILE, "w") as f:
         json.dump(links, f)
+
 
 def get_saved_drive_links():
     if not os.path.exists(DRIVE_LINKS_FILE):
@@ -124,8 +147,9 @@ def get_saved_drive_links():
     try:
         with open(DRIVE_LINKS_FILE) as f:
             return json.load(f)
-    except:
+    except Exception:
         return []
+
 
 def delete_drive_link(link):
     links = get_saved_drive_links()
@@ -133,6 +157,7 @@ def delete_drive_link(link):
         links.remove(link)
     with open(DRIVE_LINKS_FILE, "w") as f:
         json.dump(links, f)
+
 
 def extract_drive_id(url):
     patterns = [
@@ -146,12 +171,17 @@ def extract_drive_id(url):
             return match.group(1)
     return None
 
+
 # ============================================================
-# AUTO LOAD ON STARTUP
+# AUTO LOAD ON STARTUP  (called ONCE from main())
 # ============================================================
 def auto_load_on_startup():
-    global INDEX_BUILT
-
+    """
+    Runs once at startup.
+    - If saved_drives.json exists → download last link and build index.
+    - Else if extracted_files/ has TXTs → build index from existing files.
+    """
+    # Case 1: no saved drives file but local files exist
     if not os.path.exists(DRIVE_LINKS_FILE):
         if os.path.exists(DATA_DIR) and list(Path(DATA_DIR).rglob("*.txt")):
             logging.info("🔄 بناء Index من الملفات الموجودة...")
@@ -161,10 +191,14 @@ def auto_load_on_startup():
     try:
         with open(DRIVE_LINKS_FILE) as f:
             links = json.load(f)
-    except:
+    except Exception:
         return
 
     if not links:
+        # No links saved – check for local files
+        if os.path.exists(DATA_DIR) and list(Path(DATA_DIR).rglob("*.txt")):
+            logging.info("🔄 بناء Index من الملفات الموجودة...")
+            build_search_index()
         return
 
     last_link = links[-1]
@@ -173,11 +207,15 @@ def auto_load_on_startup():
     try:
         file_id = extract_drive_id(last_link)
         if not file_id:
-            logging.error("❌ رابط غير صحيح")
+            logging.error("❌ رابط غير صحيح في saved_drives.json")
             return
 
         url = f"https://drive.google.com/uc?id={file_id}"
         gdown.download(url, ZIP_FILE, quiet=True, fuzzy=True)
+
+        if not os.path.exists(ZIP_FILE) or os.path.getsize(ZIP_FILE) == 0:
+            logging.error("❌ فشل التحميل التلقائي – الملف فارغ أو غير موجود")
+            return
 
         if os.path.exists(DATA_DIR):
             shutil.rmtree(DATA_DIR)
@@ -189,8 +227,10 @@ def auto_load_on_startup():
         logging.info("⚡ بناء الـ Index بسرعة...")
         build_search_index()
         logging.info(f"✅ Auto-loaded: {INDEX_TOTAL_LINES:,} lines ready")
+
     except Exception as e:
-        logging.error(f"❌ خطأ: {e}")
+        logging.error(f"❌ خطأ في التحميل التلقائي: {e}")
+
 
 # ============================================================
 # DATA MANAGEMENT
@@ -201,20 +241,21 @@ def load_all_data():
         try:
             with open(CODES_FILE, "r") as f:
                 ACCESS_CODES = json.load(f)
-        except:
+        except Exception:
             ACCESS_CODES = {}
     if os.path.exists(USERS_FILE):
         try:
             with open(USERS_FILE, "r") as f:
                 USERS_DB = json.load(f)
-        except:
+        except Exception:
             USERS_DB = {}
     if os.path.exists(STATS_FILE):
         try:
             with open(STATS_FILE, "r") as f:
                 STATS = json.load(f)
-        except:
+        except Exception:
             STATS = {}
+
 
 def save_all_data():
     with open(CODES_FILE, "w") as f:
@@ -223,6 +264,7 @@ def save_all_data():
         json.dump(USERS_DB, f)
     with open(STATS_FILE, "w") as f:
         json.dump(STATS, f)
+
 
 async def convert_url_to_combo(url):
     try:
@@ -243,8 +285,9 @@ async def convert_url_to_combo(url):
                 if combo and not combo.startswith(':'):
                     return combo
         return None
-    except:
+    except Exception:
         return None
+
 
 # ============================================================
 # MENUS
@@ -261,6 +304,7 @@ def get_main_menu(is_admin=False):
         keyboard.insert(2, [InlineKeyboardButton("☁️ Google Drive", callback_data="drive_menu")])
     return InlineKeyboardMarkup(keyboard)
 
+
 def get_drive_menu(links):
     keyboard = []
     if links:
@@ -269,6 +313,7 @@ def get_drive_menu(links):
     keyboard.append([InlineKeyboardButton("➕ رفع رابط جديد", callback_data="drive_new")])
     keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="back")])
     return InlineKeyboardMarkup(keyboard)
+
 
 def get_drive_links_menu(links):
     keyboard = []
@@ -281,13 +326,12 @@ def get_drive_links_menu(links):
     keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="drive_menu")])
     return InlineKeyboardMarkup(keyboard)
 
+
 # ============================================================
 # CORE DRIVE DOWNLOAD LOGIC
 # ============================================================
 async def download_and_index_drive(link, msg, context):
     """تحميل ZIP من Google Drive وبناء الـ Index"""
-    global INDEX_BUILT
-
     file_id = extract_drive_id(link)
     if not file_id:
         await msg.edit_text(
@@ -396,6 +440,7 @@ async def download_and_index_drive(link, msg, context):
     )
     return True
 
+
 # ============================================================
 # HANDLERS
 # ============================================================
@@ -427,6 +472,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     await update.message.reply_text(welcome_text, reply_markup=get_main_menu(is_admin=is_admin))
+
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -557,7 +603,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ─────────── CONVERTER ───────────
     elif data == "converter":
         await query.edit_message_text(
-            text="🔄 *محول URL إلى Combo*\n\n📤 أرسل ملف TXT يحتوي على URLs"
+            text="🔄 *محول URL إلى Combo*\n\n📤 أرسل ملف TXT يحتوي على URLs",
+            parse_mode="Markdown"
         )
         context.user_data["mode"] = "converter"
 
@@ -589,6 +636,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data == "rebuild":
+        if INDEX_BUILDING:
+            await query.answer("⚠️ الـ Index قيد البناء بالفعل!", show_alert=True)
+            return
         await query.edit_message_text("🔄 جاري إعادة بناء الـ Index...")
         build_search_index()
         await query.edit_message_text(
@@ -621,6 +671,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_main_menu(is_admin=is_admin)
         )
 
+
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     document = update.message.document
     file_name = document.file_name.lower()
@@ -645,7 +696,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 combo = await convert_url_to_combo(line)
                 if combo:
                     combos.append(combo)
-            if (i + 1) % max(1, total // 10) == 0:
+            if total > 0 and (i + 1) % max(1, total // 10) == 0:
                 elapsed = time.time() - start_time
                 await status_msg.edit_text(
                     f"⏳ جاري المعالجة...\n"
@@ -667,7 +718,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             filename="combos_converted.txt",
             caption=f"📥 ({len(combos):,})"
         )
-        os.remove("temp_file.txt")
+        if os.path.exists("temp_file.txt"):
+            os.remove("temp_file.txt")
         return
 
     # ── ZIP Upload ──
@@ -697,6 +749,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     load_all_data()
     text = update.message.text.strip()
@@ -709,7 +762,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ ما عندكش صلاحية!")
             return
 
-        # تحقق من الرابط
         if "drive.google.com" not in text and "id=" not in text:
             await update.message.reply_text(
                 "❌ *هذا مو رابط Google Drive!*\n\n"
@@ -758,13 +810,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await update.message.reply_document(
             document=open(result_file, "rb"),
-            filename=f"results.txt",
+            filename="results.txt",
             caption=f"🔍 {len(results):,} | ⚡ {elapsed:.2f}s"
         )
 
+
+# ============================================================
+# MAIN  –  auto_load_on_startup() called ONCE here only
+# ============================================================
 def main():
     load_all_data()
-    auto_load_on_startup()
+    auto_load_on_startup()          # ← single call, guarded inside
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -773,6 +829,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     print("🚀 بوت البحث السريع v7.1 شغال! ✅")
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
