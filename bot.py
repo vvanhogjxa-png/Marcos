@@ -179,8 +179,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("استعمل هكذا:
-/search keyword")
+        await update.message.reply_text("استعمل هكذا:\\n/search keyword")
         return
 
     keyword = " ".join(context.args)
@@ -212,8 +211,7 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 processed += 1
 
                 if keyword.lower() in line.lower():
-                    results.append(line.rstrip("
-"))
+                    results.append(line.rstrip("\\n"))
 
                 percentage = (processed / max(total_lines, 1)) * 100
 
@@ -293,8 +291,7 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def redeem_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("استعمل هكذا:
-/redeem CODE")
+        await update.message.reply_text("استعمل هكذا:\\n/redeem CODE")
         return
 
     code = context.args[0]
@@ -317,8 +314,7 @@ async def gkey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
     REDEEM_CODES.add(code)
 
-    await update.message.reply_text(f"🔑 الكود الجديد:
-`{code}`", parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text(f"🔑 الكود الجديد:\\n`{code}`", parse_mode=ParseMode.MARKDOWN)
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
