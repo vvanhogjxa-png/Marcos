@@ -46,10 +46,9 @@ def extract_zip_if_needed(file_path):
                         file_path_txt = os.path.join(root, file)
                         try:
                             with open(file_path_txt, "r", encoding="utf-8", errors="ignore") as infile:
-                                outfile.write(f"\\n===== {file} =====\\n")
+                                outfile.write(f"\n===== {file} =====\n")
                                 outfile.write(infile.read())
-                                outfile.write("
-")
+                                outfile.write("\\n")
                         except Exception:
                             pass
 
