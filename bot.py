@@ -335,7 +335,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ تم رفع الملف بنجاح!\n\n"
         f"📄 عدد الأسطر: {line_count:,}\n"
         f"⚡ Fast Indexed Search جاهز"
-    )
+    
 
 
 def main():
