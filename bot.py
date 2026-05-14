@@ -48,7 +48,7 @@ def extract_zip_if_needed(file_path):
                             with open(file_path_txt, "r", encoding="utf-8", errors="ignore") as infile:
                                 outfile.write(f"\n===== {file} =====\n")
                                 outfile.write(infile.read())
-                                outfile.write("\\n")
+                                outfile.write("\n")
                         except Exception:
                             pass
 
@@ -71,8 +71,7 @@ def build_search_index():
 
     with open(INDEX_FILE, "w", encoding="utf-8") as f:
         for item in unique_lines:
-            f.write(item + "
-")
+            f.write(item + "\\n")
 
 
 def download_file(url, output_path):
