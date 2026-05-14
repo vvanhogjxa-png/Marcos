@@ -3,7 +3,13 @@ import logging
 import requests
 import zipfile
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+)
 from telegram.constants import ParseMode
 
 logging.basicConfig(level=logging.INFO)
@@ -12,18 +18,22 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATA_FILE = "data.txt"
 INDEX_FILE = "search_index.txt"
 
-
 OWNER_ID = 123456789  # بدلها بالـ Telegram ID ديالك
 REDEEM_CODES = set()
 
-
-SUPPORTED_LINKS = ["gofile.io", "drive.google.com", "mega.nz", "mediafire.com", "dropbox.com"]
+SUPPORTED_LINKS = [
+    "gofile.io",
+    "drive.google.com",
+    "mega.nz",
+    "mediafire.com",
+    "dropbox.com",
+]
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "سلام! 👋\n\n"
-        "📎 بعثلي رابط Gofile ديال الفايل\n"
+        "📎 بعثلي رابط الملف أو TXT/ZIP مباشرة\n"
         "⬇️ أنا نحملو أوتوماتيك\n"
         "🔍 بعدها بعثلي أي كلمة نبحث ليك فيها\n\n"
         "جرب دابا!"
@@ -31,30 +41,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def extract_zip_if_needed(file_path):
-    if file_path.lower().endswith('.zip'):
-        extract_folder = "extracted_files"
-        os.makedirs(extract_folder, exist_ok=True)
+    if not file_path.lower().endswith(".zip"):
+        return file_path
 
-        with zipfile.ZipFile(file_path, 'r') as zip_ref:
-            zip_ref.extractall(extract_folder)
+    extract_folder = "extracted_files"
+    os.makedirs(extract_folder, exist_ok=True)
 
-        merged_file = "data.txt"
-        with open(merged_file, "w", encoding="utf-8", errors="ignore") as outfile:
-            for root, _, files in os.walk(extract_folder):
-                for file in files:
-                    if file.lower().endswith(".txt"):
-                        file_path_txt = os.path.join(root, file)
-                        try:
-                            with open(file_path_txt, "r", encoding="utf-8", errors="ignore") as infile:
-                                outfile.write(f"\n===== {file} =====\n")
-                                outfile.write(infile.read())
-                                outfile.write("\n")
-                        except Exception:
-                            pass
+    with zipfile.ZipFile(file_path, "r") as zip_ref:
+        zip_ref.extractall(extract_folder)
 
-        return merged_file
+    merged_file = DATA_FILE
 
-    return file_path
+    with open(merged_file, "w", encoding="utf-8", errors="ignore") as outfile:
+        for root, _, files in os.walk(extract_folder):
+            for file in files:
+                if file.lower().endswith(".txt"):
+                    txt_path = os.path.join(root, file)
+                    try:
+                        with open(txt_path, "r", encoding="utf-8", errors="ignore") as infile:
+                            outfile.write(f"\n===== {file} =====\n")
+                            outfile.write(infile.read())
+                            outfile.write("\n")
+                    except Exception:
+                        pass
+
+    return merged_file
 
 
 def build_search_index():
@@ -63,7 +74,7 @@ def build_search_index():
 
     unique_lines = set()
 
-    with open(INDEX_FILE, "r", encoding="utf-8", errors="ignore") as f:
+    with open(DATA_FILE, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
             clean_line = line.strip()
             if clean_line:
@@ -71,7 +82,7 @@ def build_search_index():
 
     with open(INDEX_FILE, "w", encoding="utf-8") as f:
         for item in unique_lines:
-            f.write(item + "\\n")
+            f.write(item + "\n")
 
 
 def download_file(url, output_path):
@@ -84,18 +95,31 @@ def download_file(url, output_path):
                 file.write(chunk)
 
 
+async def process_loaded_file(update: Update):
+    build_search_index()
+
+    with open(DATA_FILE, "r", encoding="utf-8", errors="ignore") as f:
+        line_count = sum(1 for _ in f)
+
+    await update.message.reply_text(
+        f"✅ الفايل تحمل بنجاح!\n"
+        f"📊 عدد الأسطر: {line_count:,}\n\n"
+        f"🔍 دابا بعثلي الكلمة اللي بغيتي تبحث عليها"
+    )
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
-    # إذا كان رابط Gofile
     if any(link in text for link in SUPPORTED_LINKS):
         await update.message.reply_text(
-            "⬇️ بدات نحمل الفايل... هاد العملية تاخد وقت حسب الحجم."
+            "⬇️ جاري تحميل الملف...\n⏳ المرجو الانتظار"
         )
 
         try:
             temp_file = "downloaded_file"
             download_file(text, temp_file)
+
             final_file = extract_zip_if_needed(temp_file)
 
             if final_file != DATA_FILE:
@@ -103,133 +127,59 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     os.remove(DATA_FILE)
                 os.rename(final_file, DATA_FILE)
 
-            build_search_index()
-
-            with open(DATA_FILE, "r", encoding="utf-8", errors="ignore") as f:
-                line_count = sum(1 for _ in f)
-
-            await update.message.reply_text(
-                f"✅ الفايل تحمل بنجاح!\n"
-                f"📊 عدد الليني: {line_count:,}\n\n"
-                f"دابا بعثلي الكلمة اللي بغيتي تبحث عليها 🔍"
-            )
+            await process_loaded_file(update)
 
         except Exception as e:
             await update.message.reply_text(
-                f"❌ مشكل في التحميل:\n{e}\n\n"
-                "تحقق أن الرابط مباشر وصحيح"
+                f"❌ مشكل في التحميل:\n{e}"
             )
         return
 
-    # إذا كانت كلمة للبحث
-    if not os.path.exists(DATA_FILE):
+    if not os.path.exists(INDEX_FILE):
         await update.message.reply_text(
-            "❌ ما عندي فايل محفوظ. بعثلي رابط Gofile أولاً."
+            "❌ ما عندي فايل محفوظ أولاً. بعثلي ملف أو رابط أولاً."
         )
         return
 
     keyword = text
-    await update.message.reply_text(
-        f"🔍 كنبحث على: *{keyword}*...",
-        parse_mode="Markdown"
+    await run_search(update, keyword)
+
+
+async def run_search(update: Update, keyword: str):
+    progress_msg = await update.message.reply_text(
+        "🔍 بدء البحث...\n\n📊 Progress: 0%"
     )
 
     results = []
-    try:
-        with open(DATA_FILE, "r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                parts = line.rstrip("
-").split("|||", 1)
-                if len(parts) != 2:
-                    continue
 
-                searchable, original = parts
-
-                if keyword.lower() in searchable:
-                    results.append(original)
-    except Exception as e:
-        await update.message.reply_text(f"❌ خطأ أثناء البحث: {e}")
-        return
-
-    if not results:
-        await update.message.reply_text(
-            f"😕 ما لقيت والو على '{keyword}'."
-        )
-        return
-
-    result_file = "resultat.txt"
-    with open(result_file, "w", encoding="utf-8") as f:
-        f.write(f"نتائج البحث على: {keyword}\n")
-        f.write(f"عدد النتائج: {len(results):,}\n")
-        f.write("=" * 50 + "\n\n")
-        for line in results:
-            f.write(line + "\n")
-
-    await update.message.reply_document(
-        document=open(result_file, "rb"),
-        filename="resultat.txt",
-        caption=f"✅ لقيت *{len(results):,}* نتيجة على '{keyword}'",
-        parse_mode="Markdown"
-    )
-
-
-async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("استعمل هكذا:\n/search keyword")
-        return
-
-    keyword = " ".join(context.args)
-
-    if not os.path.exists(INDEX_FILE):
-        await update.message.reply_text("❌ ما عندي Index محفوظ أولاً. حمّل الملف أولاً.")
-        return
-
-    # حساب عدد الأسطر لإظهار progress
     try:
         with open(INDEX_FILE, "r", encoding="utf-8", errors="ignore") as f:
-            total_lines = sum(1 for _ in f)
-    except Exception as e:
-        await update.message.reply_text(f"❌ خطأ أثناء فتح الملف: {e}")
-        return
+            lines = f.readlines()
 
-    progress_msg = await update.message.reply_text(
-        "🔍 بدء البحث...
+        total_lines = len(lines)
 
-📊 Progress: 0%"
-    )
+        for i, line in enumerate(lines, start=1):
+            parts = line.rstrip("\n").split("|||", 1)
+            if len(parts) != 2:
+                continue
 
-    results = []
-    processed = 0
+            searchable, original = parts
 
-    try:
-        with open(DATA_FILE, "r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                processed += 1
+            if keyword.lower() in searchable:
+                results.append(original)
 
-                if keyword.lower() in line.lower():
-                    results.append(line.rstrip("\n"))
+            if i % max(1, total_lines // 10) == 0:
+                percentage = (i / max(total_lines, 1)) * 100
+                filled = int(20 * percentage / 100)
+                bar = "█" * filled + "░" * (20 - filled)
 
-                percentage = (processed / max(total_lines, 1)) * 100
-
-                if processed % max(1, total_lines // 10) == 0:
-                    bar_length = 20
-                    filled = int(bar_length * percentage / 100)
-                    bar = "█" * filled + "░" * (bar_length - filled)
-
-                    await progress_msg.edit_text(
-                        f"🔍 جاري البحث...
-
-"
-                        f"[{bar}] {percentage:.1f}%
-"
-                        f"📄 الأسطر: {processed}/{total_lines}
-"
-                        f"🎯 النتائج الحالية: {len(results)}
-"
-                        f"⚡ Speed: Fast Indexed Search
-"
-                        f"⏳ ETA: تقريباً ثوانٍ قليلة"
-                    )
+                await progress_msg.edit_text(
+                    f"🔍 جاري البحث...\n\n"
+                    f"[{bar}] {percentage:.1f}%\n"
+                    f"📄 الأسطر: {i}/{total_lines}\n"
+                    f"🎯 النتائج الحالية: {len(results)}\n"
+                    f"⚡ Fast Indexed Search"
+                )
 
     except Exception as e:
         await update.message.reply_text(f"❌ خطأ أثناء البحث: {e}")
@@ -243,42 +193,41 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     result_file = "resultat.txt"
     with open(result_file, "w", encoding="utf-8") as f:
-        f.write(f"نتائج البحث على: {keyword}
-")
-        f.write(f"عدد النتائج: {len(results):,}
-")
-        f.write("=" * 50 + "
+        f.write(f"نتائج البحث على: {keyword}\n")
+        f.write(f"عدد النتائج: {len(results):,}\n")
+        f.write("=" * 50 + "\n\n")
 
-")
         for line in results[:5000]:
-            f.write(line + "
-")
+            f.write(line + "\n")
 
     await progress_msg.edit_text(
-        f"✅ البحث اكتمل!
-
-"
-        f"🎯 عدد النتائج: {len(results):,}
-"
-        f"⚡ Speed: Fast Indexed Search
-"
-        f"⏳ ETA: 0 sec
-"
-        f"🏆 Search Finished Successfully"
-    ):,}
-"
-        f"⚡ Speed: Fast Indexed Search
-"
-                        f"⏳ ETA: تقريباً ثوانٍ قليلة"
-    ):,}"
+        f"✅ البحث اكتمل!\n\n🎯 عدد النتائج: {len(results):,}"
     )
 
     await update.message.reply_document(
         document=open(result_file, "rb"),
         filename="resultat.txt",
         caption=f"✅ لقيت *{len(results):,}* نتيجة على '{keyword}'",
-        parse_mode=ParseMode.MARKDOWN
+        parse_mode=ParseMode.MARKDOWN,
     )
+
+
+async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "استعمل هكذا:\n/search keyword"
+        )
+        return
+
+    keyword = " ".join(context.args)
+
+    if not os.path.exists(INDEX_FILE):
+        await update.message.reply_text(
+            "❌ ما عندي ملف محفوظ أولاً."
+        )
+        return
+
+    await run_search(update, keyword)
 
 
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -287,7 +236,9 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def redeem_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("استعمل هكذا:\n/redeem CODE")
+        await update.message.reply_text(
+            "استعمل هكذا:\n/redeem CODE"
+        )
         return
 
     code = context.args[0]
@@ -296,7 +247,9 @@ async def redeem_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         REDEEM_CODES.remove(code)
         await update.message.reply_text("✅ تم تفعيل الكود بنجاح!")
     else:
-        await update.message.reply_text("❌ الكود غير صحيح أو مستعمل من قبل.")
+        await update.message.reply_text(
+            "❌ الكود غير صحيح أو مستعمل من قبل."
+        )
 
 
 async def gkey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -307,10 +260,15 @@ async def gkey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     import random
     import string
 
-    code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
+    code = "".join(
+        random.choices(string.ascii_uppercase + string.digits, k=10)
+    )
     REDEEM_CODES.add(code)
 
-    await update.message.reply_text(f"🔑 الكود الجديد:\n`{code}`", parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text(
+        f"🔑 الكود الجديد:\n`{code}`",
+        parse_mode=ParseMode.MARKDOWN,
+    )
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -329,9 +287,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     progress_msg = await update.message.reply_text(
-        "⬇️ جاري تحميل الملف من Telegram...
-
-📊 Progress: 0%"
+        "⬇️ جاري تحميل الملف من Telegram...\n\n📊 Progress: 0%"
     )
 
     telegram_file = await context.bot.get_file(document.file_id)
@@ -340,8 +296,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await telegram_file.download_to_drive(temp_path)
 
     await progress_msg.edit_text(
-        "🔄 جاري تجهيز الملف...
-⚡ Fast Mode"
+        "🔄 جاري تجهيز الملف...\n⚡ Fast Mode"
     )
 
     final_file = extract_zip_if_needed(temp_path)
@@ -357,11 +312,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         line_count = sum(1 for _ in f)
 
     await progress_msg.edit_text(
-        f"✅ تم رفع الملف بنجاح!
-
-"
-        f"📄 عدد الأسطر: {line_count:,}
-"
+        f"✅ تم رفع الملف بنجاح!\n\n"
+        f"📄 عدد الأسطر: {line_count:,}\n"
         f"⚡ Fast Indexed Search جاهز"
     )
 
