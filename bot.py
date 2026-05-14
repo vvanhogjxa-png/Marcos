@@ -1,800 +1,355 @@
 import os
-import re
 import logging
-import gdown
+import requests
 import zipfile
-import shutil
-import json
-import time
-import threading
-from datetime import datetime
-from pathlib import Path
-from collections import defaultdict
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from telegram import Update
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+)
+from telegram.constants import ParseMode
 
 logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-ADMIN_IDS = list(map(int, os.environ.get("ADMIN_IDS", "0").split(",")))
-DATA_DIR = "extracted_files"
-ZIP_FILE = "data.zip"
-CODES_FILE = "access_codes.json"
-USERS_FILE = "users_db.json"
-STATS_FILE = "stats.json"
-DRIVE_LINKS_FILE = "saved_drives.json"
+DATA_FILE = "data.txt"
+INDEX_FILE = "search_index.txt"
 
-ACCESS_CODES = {}
-USERS_DB = {}
-STATS = {}
+ADMIN_IDS = list(map(int, os.environ.get("ADMIN_IDS", "123456789").split(",")))  # يمكن إضافة أكثر من Admin ID مفصول بفاصلة
+REDEEM_CODES = set()
 
-# ============================================================
-# INDEX
-# ============================================================
-SEARCH_INDEX = defaultdict(list)
-INDEX_BUILT = False
-INDEX_BUILDING = False
-INDEX_TOTAL_LINES = 0
-INDEX_LOCK = threading.Lock()
+SUPPORTED_LINKS = [
+    "gofile.io",
+    "drive.google.com",
+    "mega.nz",
+    "mediafire.com",
+    "dropbox.com",
+]
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "سلام! 👋\n\n"
+        "📎 بعثلي رابط الملف أو TXT/ZIP مباشرة\n"
+        "⬇️ أنا نحملو أوتوماتيك\n"
+        "🔍 بعدها بعثلي أي كلمة نبحث ليك فيها\n\n"
+        "جرب دابا!"
+    )
+
+
+def extract_zip_if_needed(file_path):
+    if not file_path.lower().endswith(".zip"):
+        return file_path
+
+    extract_folder = "extracted_files"
+    os.makedirs(extract_folder, exist_ok=True)
+
+    with zipfile.ZipFile(file_path, "r") as zip_ref:
+        zip_ref.extractall(extract_folder)
+
+    merged_file = DATA_FILE
+
+    with open(merged_file, "w", encoding="utf-8", errors="ignore") as outfile:
+        for root, _, files in os.walk(extract_folder):
+            for file in files:
+                if file.lower().endswith(".txt"):
+                    txt_path = os.path.join(root, file)
+                    try:
+                        with open(txt_path, "r", encoding="utf-8", errors="ignore") as infile:
+                            outfile.write(f"\n===== {file} =====\n")
+                            outfile.write(infile.read())
+                            outfile.write("\n")
+                    except Exception:
+                        pass
+
+    return merged_file
 
 
 def build_search_index():
-    global SEARCH_INDEX, INDEX_BUILT, INDEX_BUILDING, INDEX_TOTAL_LINES
-
-    with INDEX_LOCK:
-        if INDEX_BUILDING:
-            logging.warning("⚠️ Index build already in progress – skipping.")
-            return
-        INDEX_BUILDING = True
-        INDEX_BUILT = False
-        SEARCH_INDEX = defaultdict(list)
-        INDEX_TOTAL_LINES = 0
-
-    txt_files = list(Path(DATA_DIR).rglob("*.txt"))
-
-    if not txt_files:
-        with INDEX_LOCK:
-            INDEX_BUILT = True
-            INDEX_BUILDING = False
-        logging.info("📭 لا يوجد ملفات TXT للفهرسة.")
+    if not os.path.exists(DATA_FILE):
         return
 
-    start_time = time.time()
-    logging.info(f"🔄 بناء Index بطريقة عادية لـ {len(txt_files)} ملف...")
+    unique_lines = set()
+
+    with open(DATA_FILE, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            clean_line = line.strip()
+            if clean_line:
+                unique_lines.add(clean_line.lower() + "|||" + clean_line)
+
+    with open(INDEX_FILE, "w", encoding="utf-8") as f:
+        for item in unique_lines:
+            f.write(item + "\n")
+
+
+def download_file(url, output_path):
+    response = requests.get(url, stream=True, timeout=60)
+    response.raise_for_status()
+
+    with open(output_path, "wb") as file:
+        for chunk in response.iter_content(chunk_size=8192):
+            if chunk:
+                file.write(chunk)
+
+
+async def process_loaded_file(update: Update):
+    build_search_index()
+
+    with open(DATA_FILE, "r", encoding="utf-8", errors="ignore") as f:
+        line_count = sum(1 for _ in f)
+
+    await update.message.reply_text(
+        f"✅ الفايل تحمل بنجاح!\n"
+        f"📊 عدد الأسطر: {line_count:,}\n\n"
+        f"🔍 دابا بعثلي الكلمة اللي بغيتي تبحث عليها"
+    )
+
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+
+    if any(link in text for link in SUPPORTED_LINKS):
+        await update.message.reply_text(
+            "⬇️ جاري تحميل الملف...\n⏳ المرجو الانتظار"
+        )
+
+        try:
+            temp_file = "downloaded_file"
+            download_file(text, temp_file)
+
+            final_file = extract_zip_if_needed(temp_file)
+
+            if final_file != DATA_FILE:
+                if os.path.exists(DATA_FILE):
+                    os.remove(DATA_FILE)
+                os.rename(final_file, DATA_FILE)
+
+            await process_loaded_file(update)
+
+        except Exception as e:
+            error_text = str(e)
+
+            if "Too many users have viewed or downloaded this file recently" in error_text:
+                await update.message.reply_text(
+                    "❌ Google Drive رفض التحميل حالياً
+
+"
+                    "السبب: الملف تجاوز حد التحميل اليومي من Google Drive.
+
+"
+                    "الحلول:
+"
+                    "1. انتظر عدة ساعات ثم جرّب مرة أخرى
+"
+                    "2. انسخ الملف إلى Drive آخر جديد
+"
+                    "3. استعمل رابط Gofile بدل Google Drive (أفضل وأسرع)"
+                )
+            else:
+                await update.message.reply_text(
+                    f"❌ مشكل في التحميل:
+{error_text}"
+                )
+        return
+
+    if not os.path.exists(INDEX_FILE):
+        await update.message.reply_text(
+            "❌ ما عندي فايل محفوظ أولاً. بعثلي ملف أو رابط أولاً."
+        )
+        return
+
+    keyword = text
+    await run_search(update, keyword)
+
+
+async def run_search(update: Update, keyword: str):
+    progress_msg = await update.message.reply_text(
+        "🔍 بدء البحث...\n\n📊 Progress: 0%"
+    )
+
+    results = []
 
     try:
-        for i, txt_file in enumerate(txt_files):
-            try:
-                with open(txt_file, "r", encoding="utf-8", errors="ignore") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line:
-                            INDEX_TOTAL_LINES += 1
-                            parts = set(re.split(r'[\s:@|]+', line.lower()))
-                            for part in parts:
-                                if len(part) >= 2:
-                                    SEARCH_INDEX[part].append(line)
-            except Exception as e:
-                logging.error(f"❌ خطأ في الملف {txt_file}: {e}")
+        with open(INDEX_FILE, "r", encoding="utf-8", errors="ignore") as f:
+            lines = f.readlines()
+
+        total_lines = len(lines)
+
+        for i, line in enumerate(lines, start=1):
+            parts = line.rstrip("\n").split("|||", 1)
+            if len(parts) != 2:
                 continue
 
-            logging.info(f"✅ {i+1}/{len(txt_files)} - {txt_file.name}")
+            searchable, original = parts
 
-    finally:
-        elapsed = time.time() - start_time
-        with INDEX_LOCK:
-            INDEX_BUILT = True
-            INDEX_BUILDING = False
-        logging.info(
-            f"✅ Index built: {INDEX_TOTAL_LINES:,} lines, "
-            f"{len(SEARCH_INDEX):,} keys in {elapsed:.1f}s"
-        )
+            if keyword.lower() in searchable:
+                results.append(original)
 
+            if i % max(1, total_lines // 10) == 0:
+                percentage = (i / max(total_lines, 1)) * 100
+                filled = int(20 * percentage / 100)
+                bar = "█" * filled + "░" * (20 - filled)
 
-def fast_search(keyword):
-    keyword_lower = keyword.lower()
-    results = set()
-    with INDEX_LOCK:
-        if keyword_lower in SEARCH_INDEX:
-            for line in SEARCH_INDEX[keyword_lower]:
-                results.add(line)
-        for key in SEARCH_INDEX:
-            if keyword_lower in key or key in keyword_lower:
-                for line in SEARCH_INDEX[key]:
-                    results.add(line)
-    return list(results)
-
-
-# ============================================================
-# DRIVE LINKS MANAGEMENT
-# ============================================================
-def save_drive_link(link):
-    links = []
-    if os.path.exists(DRIVE_LINKS_FILE):
-        try:
-            with open(DRIVE_LINKS_FILE) as f:
-                links = json.load(f)
-        except Exception:
-            links = []
-    if link and link not in links:
-        links.append(link)
-    with open(DRIVE_LINKS_FILE, "w") as f:
-        json.dump(links, f)
-
-
-def get_saved_drive_links():
-    if not os.path.exists(DRIVE_LINKS_FILE):
-        return []
-    try:
-        with open(DRIVE_LINKS_FILE) as f:
-            return json.load(f)
-    except Exception:
-        return []
-
-
-def delete_drive_link(link):
-    links = get_saved_drive_links()
-    if link in links:
-        links.remove(link)
-    with open(DRIVE_LINKS_FILE, "w") as f:
-        json.dump(links, f)
-
-
-def extract_drive_id(url):
-    patterns = [
-        r"/file/d/([a-zA-Z0-9_-]+)",
-        r"id=([a-zA-Z0-9_-]+)",
-        r"/open\?id=([a-zA-Z0-9_-]+)"
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match:
-            return match.group(1)
-    return None
-
-
-# ============================================================
-# AUTO LOAD ON STARTUP
-# ============================================================
-def auto_load_on_startup():
-    if not os.path.exists(DRIVE_LINKS_FILE):
-        if os.path.exists(DATA_DIR) and list(Path(DATA_DIR).rglob("*.txt")):
-            logging.info("🔄 بناء Index من الملفات الموجودة...")
-            build_search_index()
-        return
-
-    try:
-        with open(DRIVE_LINKS_FILE) as f:
-            links = json.load(f)
-    except Exception:
-        return
-
-    if not links:
-        if os.path.exists(DATA_DIR) and list(Path(DATA_DIR).rglob("*.txt")):
-            logging.info("🔄 بناء Index من الملفات الموجودة...")
-            build_search_index()
-        return
-
-    last_link = links[-1]
-    logging.info(f"🔄 تحميل تلقائي من: {last_link}")
-
-    try:
-        file_id = extract_drive_id(last_link)
-        if not file_id:
-            logging.error("❌ رابط غير صحيح في saved_drives.json")
-            return
-
-        url = f"https://drive.google.com/uc?id={file_id}"
-        gdown.download(url, ZIP_FILE, quiet=True, fuzzy=True)
-
-        if not os.path.exists(ZIP_FILE) or os.path.getsize(ZIP_FILE) == 0:
-            logging.error("❌ فشل التحميل التلقائي – الملف فارغ أو غير موجود")
-            return
-
-        if os.path.exists(DATA_DIR):
-            shutil.rmtree(DATA_DIR)
-        os.makedirs(DATA_DIR, exist_ok=True)
-
-        with zipfile.ZipFile(ZIP_FILE, 'r') as z:
-            z.extractall(DATA_DIR)
-
-        logging.info("⚡ بناء الـ Index...")
-        build_search_index()
-        logging.info(f"✅ Auto-loaded: {INDEX_TOTAL_LINES:,} lines ready")
+                await progress_msg.edit_text(
+                    f"🔍 جاري البحث...\n\n"
+                    f"[{bar}] {percentage:.1f}%\n"
+                    f"📄 الأسطر: {i}/{total_lines}\n"
+                    f"🎯 النتائج الحالية: {len(results)}\n"
+                    f"⚡ Fast Indexed Search"
+                )
 
     except Exception as e:
-        logging.error(f"❌ خطأ في التحميل التلقائي: {e}")
+        await update.message.reply_text(f"❌ خطأ أثناء البحث: {e}")
+        return
 
-
-# ============================================================
-# DATA MANAGEMENT
-# ============================================================
-def load_all_data():
-    global ACCESS_CODES, USERS_DB, STATS
-    if os.path.exists(CODES_FILE):
-        try:
-            with open(CODES_FILE, "r") as f:
-                ACCESS_CODES = json.load(f)
-        except Exception:
-            ACCESS_CODES = {}
-    if os.path.exists(USERS_FILE):
-        try:
-            with open(USERS_FILE, "r") as f:
-                USERS_DB = json.load(f)
-        except Exception:
-            USERS_DB = {}
-    if os.path.exists(STATS_FILE):
-        try:
-            with open(STATS_FILE, "r") as f:
-                STATS = json.load(f)
-        except Exception:
-            STATS = {}
-
-
-def save_all_data():
-    with open(CODES_FILE, "w") as f:
-        json.dump(ACCESS_CODES, f)
-    with open(USERS_FILE, "w") as f:
-        json.dump(USERS_DB, f)
-    with open(STATS_FILE, "w") as f:
-        json.dump(STATS, f)
-
-
-async def convert_url_to_combo(url):
-    try:
-        url = url.strip()
-        match = re.search(r':([^/:]+:[^/:]+)$', url)
-        if match:
-            combo = match.group(1).strip()
-            if ':' in combo and not combo.startswith(':'):
-                return combo
-        if url.count(':') >= 3:
-            if '/' in url:
-                last_part = url.split('/')[-1]
-            else:
-                last_part = url
-            parts = last_part.split(':')
-            if len(parts) >= 2:
-                combo = ':'.join(parts[-2:]).strip()
-                if combo and not combo.startswith(':'):
-                    return combo
-        return None
-    except Exception:
-        return None
-
-
-# ============================================================
-# MENUS
-# ============================================================
-def get_main_menu(is_admin=False):
-    keyboard = [
-        [InlineKeyboardButton("🔍 البحث السريع", callback_data="search")],
-        [InlineKeyboardButton("🔄 Combo Converter", callback_data="converter")],
-        [InlineKeyboardButton("📊 الإحصائيات", callback_data="stats")],
-        [InlineKeyboardButton("⚙️ الإعدادات", callback_data="settings")],
-        [InlineKeyboardButton("❓ المساعدة", callback_data="help")],
-    ]
-    if is_admin:
-        keyboard.insert(2, [InlineKeyboardButton("☁️ Google Drive", callback_data="drive_menu")])
-    return InlineKeyboardMarkup(keyboard)
-
-
-def get_drive_menu(links):
-    keyboard = []
-    if links:
-        keyboard.append([InlineKeyboardButton(f"📋 الروابط المحفوظة ({len(links)})", callback_data="drive_list")])
-        keyboard.append([InlineKeyboardButton("🔄 إعادة تحميل آخر رابط", callback_data="drive_reload")])
-    keyboard.append([InlineKeyboardButton("➕ رفع رابط جديد", callback_data="drive_new")])
-    keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="back")])
-    return InlineKeyboardMarkup(keyboard)
-
-
-def get_drive_links_menu(links):
-    keyboard = []
-    for i, link in enumerate(links):
-        short = link[:35] + "..." if len(link) > 35 else link
-        keyboard.append([
-            InlineKeyboardButton(f"📥 {short}", callback_data=f"drive_load_{i}"),
-            InlineKeyboardButton("🗑️", callback_data=f"drive_delete_{i}")
-        ])
-    keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="drive_menu")])
-    return InlineKeyboardMarkup(keyboard)
-
-
-# ============================================================
-# CORE DRIVE DOWNLOAD LOGIC
-# ============================================================
-async def download_and_index_drive(link, msg, context):
-    file_id = extract_drive_id(link)
-    if not file_id:
-        await msg.edit_text(
-            "❌ *رابط غير صحيح!*\n\n"
-            "تأكد أن الرابط من Google Drive وفيه `/file/d/` أو `?id=`",
-            parse_mode="Markdown"
+    if not results:
+        await progress_msg.edit_text(
+            f"😕 ما لقيت والو على '{keyword}'."
         )
-        return False
+        return
 
-    await msg.edit_text(
-        "☁️ *جاري التحميل من Google Drive...*\n\n"
-        "⏳ قد يستغرق بعض الوقت حسب حجم الملف",
-        parse_mode="Markdown"
+    result_file = "resultat.txt"
+    with open(result_file, "w", encoding="utf-8") as f:
+        f.write(f"نتائج البحث على: {keyword}\n")
+        f.write(f"عدد النتائج: {len(results):,}\n")
+        f.write("=" * 50 + "\n\n")
+
+        for line in results[:5000]:
+            f.write(line + "\n")
+
+    await progress_msg.edit_text(
+        f"✅ البحث اكتمل!\n\n🎯 عدد النتائج: {len(results):,}"
     )
 
-    try:
-        url = f"https://drive.google.com/uc?id={file_id}"
-        start_dl = time.time()
-        gdown.download(url, ZIP_FILE, quiet=True, fuzzy=True)
-        dl_time = time.time() - start_dl
-
-        if not os.path.exists(ZIP_FILE) or os.path.getsize(ZIP_FILE) == 0:
-            await msg.edit_text(
-                "❌ *فشل التحميل!*\n\n"
-                "تأكد أن:\n"
-                "• الرابط صحيح ✅\n"
-                "• الملف مشارك للعموم 🌐\n"
-                "• الملف ZIP 📦",
-                parse_mode="Markdown"
-            )
-            return False
-
-        file_size_mb = os.path.getsize(ZIP_FILE) / (1024 * 1024)
-
-    except Exception as e:
-        await msg.edit_text(
-            f"❌ *خطأ في التحميل:*\n\n`{str(e)[:200]}`",
-            parse_mode="Markdown"
-        )
-        return False
-
-    await msg.edit_text(
-        f"📦 *تم التحميل!* ({file_size_mb:.1f} MB في {dl_time:.1f}s)\n\n"
-        "🔄 جاري فك الضغط...",
-        parse_mode="Markdown"
+    await update.message.reply_document(
+        document=open(result_file, "rb"),
+        filename="resultat.txt",
+        caption=f"✅ لقيت *{len(results):,}* نتيجة على '{keyword}'",
+        parse_mode=ParseMode.MARKDOWN,
     )
 
-    try:
-        if os.path.exists(DATA_DIR):
-            shutil.rmtree(DATA_DIR)
-        os.makedirs(DATA_DIR, exist_ok=True)
 
-        with zipfile.ZipFile(ZIP_FILE, 'r') as z:
-            z.extractall(DATA_DIR)
-
-        txt_files = list(Path(DATA_DIR).rglob("*.txt"))
-        if not txt_files:
-            await msg.edit_text(
-                "⚠️ *لا يوجد ملفات TXT داخل الـ ZIP!*\n\n"
-                "تأكد أن الملف يحتوي على ملفات `.txt`",
-                parse_mode="Markdown"
-            )
-            return False
-
-    except zipfile.BadZipFile:
-        await msg.edit_text(
-            "❌ *الملف ليس ZIP صحيح!*\n\n"
-            "تأكد أن الملف بصيغة `.zip`",
-            parse_mode="Markdown"
+async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "استعمل هكذا:\n/search keyword"
         )
-        return False
-    except Exception as e:
-        await msg.edit_text(
-            f"❌ *خطأ في فك الضغط:*\n\n`{str(e)[:200]}`",
-            parse_mode="Markdown"
-        )
-        return False
+        return
 
-    await msg.edit_text(
-        f"⚡ *جاري بناء الـ Index...*\n\n"
-        f"📄 {len(txt_files)} ملف TXT",
-        parse_mode="Markdown"
+    keyword = " ".join(context.args)
+
+    if not os.path.exists(INDEX_FILE):
+        await update.message.reply_text(
+            "❌ ما عندي ملف محفوظ أولاً."
+        )
+        return
+
+    await run_search(update, keyword)
+
+
+async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("⛔ تم إيقاف العملية الحالية.")
+
+
+async def redeem_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "استعمل هكذا:\n/redeem CODE"
+        )
+        return
+
+    code = context.args[0]
+
+    if code in REDEEM_CODES:
+        REDEEM_CODES.remove(code)
+        await update.message.reply_text("✅ تم تفعيل الكود بنجاح!")
+    else:
+        await update.message.reply_text(
+            "❌ الكود غير صحيح أو مستعمل من قبل."
+        )
+
+
+async def gkey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ هذا الأمر فقط للمالك.")
+        return
+
+    import random
+    import string
+
+    code = "".join(
+        random.choices(string.ascii_uppercase + string.digits, k=10)
     )
+    REDEEM_CODES.add(code)
 
-    build_search_index()
-    save_drive_link(link)
-
-    await msg.edit_text(
-        f"✅ *تم بنجاح!*\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"📦 الحجم: `{file_size_mb:.1f} MB`\n"
-        f"📄 الملفات: `{len(txt_files)}`\n"
-        f"⚡ الأسطر: `{INDEX_TOTAL_LINES:,}`\n"
-        f"🗝️ Keywords: `{len(SEARCH_INDEX):,}`\n"
-        f"⏱️ وقت التحميل: `{dl_time:.1f}s`\n"
-        f"━━━━━━━━━━━━━━━\n\n"
-        f"🔍 البوت جاهز للبحث!",
-        parse_mode="Markdown",
-        reply_markup=get_main_menu(is_admin=True)
+    await update.message.reply_text(
+        f"🔑 الكود الجديد:\n`{code}`",
+        parse_mode=ParseMode.MARKDOWN,
     )
-    return True
-
-
-# ============================================================
-# HANDLERS
-# ============================================================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    load_all_data()
-    user_id = update.effective_user.id
-    first_name = update.effective_user.first_name
-    is_admin = user_id in ADMIN_IDS
-
-    if str(user_id) not in USERS_DB:
-        USERS_DB[str(user_id)] = {
-            "first_name": first_name,
-            "joined": datetime.now().isoformat(),
-            "searches": 0,
-            "conversions": 0
-        }
-        save_all_data()
-
-    index_status = f"⚡ Index: {INDEX_TOTAL_LINES:,} سطر جاهز" if INDEX_BUILT else "📭 لا يوجد ملفات"
-
-    welcome_text = (
-        f"╔═══════════════════════════════════╗\n"
-        f"║   🚀 بوت البحث السريع v7.1 ⚡   ║\n"
-        f"║                                   ║\n"
-        f"║        مرحباً {first_name} 👋         ║\n"
-        f"╚═══════════════════════════════════╝\n\n"
-        f"{index_status}\n\n"
-        f"🎯 اختر من الخيارات أدناه!"
-    )
-
-    await update.message.reply_text(welcome_text, reply_markup=get_main_menu(is_admin=is_admin))
-
-
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    is_admin = user_id in ADMIN_IDS
-    data = query.data
-
-    # ─────────── DRIVE MENU ───────────
-    if data == "drive_menu":
-        if not is_admin:
-            await query.answer("❌ ما عندكش صلاحية!", show_alert=True)
-            return
-        links = get_saved_drive_links()
-        await query.edit_message_text(
-            text=(
-                "☁️ *Google Drive*\n\n"
-                f"🔗 الروابط المحفوظة: `{len(links)}`\n"
-                f"⚡ الأسطر الحالية: `{INDEX_TOTAL_LINES:,}`\n\n"
-                "اختر العملية:"
-            ),
-            parse_mode="Markdown",
-            reply_markup=get_drive_menu(links)
-        )
-
-    elif data == "drive_new":
-        if not is_admin:
-            await query.answer("❌ ما عندكش صلاحية!", show_alert=True)
-            return
-        context.user_data["mode"] = "drive_link"
-        await query.edit_message_text(
-            text=(
-                "☁️ *رفع من Google Drive*\n\n"
-                "📤 أرسل رابط Google Drive للملف ZIP\n\n"
-                "📌 *مثال:*\n"
-                "`https://drive.google.com/file/d/XXXXX/view`\n\n"
-                "⚠️ تأكد أن الملف:\n"
-                "• مشارك للعموم 🌐\n"
-                "• بصيغة ZIP 📦\n"
-                "• يحتوي ملفات TXT 📄"
-            ),
-            parse_mode="Markdown"
-        )
-
-    elif data == "drive_list":
-        if not is_admin:
-            await query.answer("❌ ما عندكش صلاحية!", show_alert=True)
-            return
-        links = get_saved_drive_links()
-        if not links:
-            await query.answer("لا يوجد روابط محفوظة!", show_alert=True)
-            return
-        await query.edit_message_text(
-            text="📋 *الروابط المحفوظة:*\n\nاختر رابط للتحميل أو 🗑️ للحذف:",
-            parse_mode="Markdown",
-            reply_markup=get_drive_links_menu(links)
-        )
-
-    elif data == "drive_reload":
-        if not is_admin:
-            await query.answer("❌ ما عندكش صلاحية!", show_alert=True)
-            return
-        links = get_saved_drive_links()
-        if not links:
-            await query.answer("لا يوجد روابط محفوظة!", show_alert=True)
-            return
-        last_link = links[-1]
-        msg = await query.edit_message_text(
-            f"🔄 *إعادة تحميل:*\n`{last_link[:50]}...`",
-            parse_mode="Markdown"
-        )
-        await download_and_index_drive(last_link, msg, context)
-
-    elif data.startswith("drive_load_"):
-        if not is_admin:
-            await query.answer("❌ ما عندكش صلاحية!", show_alert=True)
-            return
-        idx = int(data.replace("drive_load_", ""))
-        links = get_saved_drive_links()
-        if idx >= len(links):
-            await query.answer("رابط غير موجود!", show_alert=True)
-            return
-        link = links[idx]
-        msg = await query.edit_message_text(
-            f"☁️ *جاري تحميل:*\n`{link[:60]}...`",
-            parse_mode="Markdown"
-        )
-        await download_and_index_drive(link, msg, context)
-
-    elif data.startswith("drive_delete_"):
-        if not is_admin:
-            await query.answer("❌ ما عندكش صلاحية!", show_alert=True)
-            return
-        idx = int(data.replace("drive_delete_", ""))
-        links = get_saved_drive_links()
-        if idx >= len(links):
-            await query.answer("رابط غير موجود!", show_alert=True)
-            return
-        deleted = links[idx]
-        delete_drive_link(deleted)
-        await query.answer("🗑️ تم الحذف!", show_alert=True)
-        links = get_saved_drive_links()
-        if links:
-            await query.edit_message_text(
-                text="📋 *الروابط المحفوظة:*",
-                parse_mode="Markdown",
-                reply_markup=get_drive_links_menu(links)
-            )
-        else:
-            await query.edit_message_text(
-                text="☁️ *Google Drive*\n\nلا يوجد روابط محفوظة.",
-                parse_mode="Markdown",
-                reply_markup=get_drive_menu([])
-            )
-
-    # ─────────── SEARCH ───────────
-    elif data == "search":
-        await query.edit_message_text(
-            text=(
-                f"🔍 *وضع البحث السريع*\n\n"
-                f"⚡ {INDEX_TOTAL_LINES:,} سطر جاهز\n\n"
-                f"📝 أرسل كلمة للبحث"
-            ),
-            parse_mode="Markdown"
-        )
-        context.user_data["mode"] = "search"
-
-    # ─────────── CONVERTER ───────────
-    elif data == "converter":
-        await query.edit_message_text(
-            text="🔄 *محول URL إلى Combo*\n\n📤 أرسل ملف TXT يحتوي على URLs",
-            parse_mode="Markdown"
-        )
-        context.user_data["mode"] = "converter"
-
-    # ─────────── STATS ───────────
-    elif data == "stats":
-        links = get_saved_drive_links()
-        await query.edit_message_text(
-            text=(
-                f"📊 *الإحصائيات*\n\n"
-                f"⚡ Indexed Lines: `{INDEX_TOTAL_LINES:,}`\n"
-                f"🗝️ Keywords: `{len(SEARCH_INDEX):,}`\n"
-                f"🔗 Drive Links: `{len(links)}`\n"
-                f"👥 Users: `{len(USERS_DB)}`"
-            ),
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="back")]])
-        )
-
-    # ─────────── SETTINGS ───────────
-    elif data == "settings":
-        keyboard = [
-            [InlineKeyboardButton("🔄 إعادة بناء Index", callback_data="rebuild")],
-            [InlineKeyboardButton("🔙 رجوع", callback_data="back")]
-        ]
-        await query.edit_message_text(
-            text="⚙️ *الإعدادات*",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-
-    elif data == "rebuild":
-        if INDEX_BUILDING:
-            await query.answer("⚠️ الـ Index قيد البناء بالفعل!", show_alert=True)
-            return
-        await query.edit_message_text("🔄 جاري إعادة بناء الـ Index...")
-        build_search_index()
-        await query.edit_message_text(
-            f"✅ تم!\n\n⚡ `{INDEX_TOTAL_LINES:,}` سطر",
-            parse_mode="Markdown",
-            reply_markup=get_main_menu(is_admin=is_admin)
-        )
-
-    # ─────────── HELP ───────────
-    elif data == "help":
-        help_text = (
-            "❓ *المساعدة*\n\n"
-            "🔍 *البحث:* أرسل كلمة بعد الضغط على البحث\n"
-            "🔄 *التحويل:* أرسل ملف TXT فيه URLs\n"
-            "📤 *ZIP مباشر:* أرسل ملف ZIP في أي وقت\n"
-        )
-        if is_admin:
-            help_text += "☁️ *Drive:* أدمن فقط - رفع من Google Drive\n"
-        await query.edit_message_text(
-            text=help_text,
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="back")]])
-        )
-
-    # ─────────── BACK ───────────
-    elif data == "back":
-        await query.edit_message_text(
-            text="🏠 *القائمة الرئيسية*",
-            parse_mode="Markdown",
-            reply_markup=get_main_menu(is_admin=is_admin)
-        )
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     document = update.message.document
+
+    if not document:
+        await update.message.reply_text("❌ ما توصلت بأي ملف.")
+        return
+
     file_name = document.file_name.lower()
-    mode = context.user_data.get("mode", "normal")
-    is_admin = update.effective_user.id in ADMIN_IDS
 
-    # ── Combo Converter ──
-    if mode == "converter" and file_name.endswith('.txt'):
-        file = await context.bot.get_file(document.file_id)
-        await file.download_to_drive("temp_file.txt")
-        combos = []
-        with open("temp_file.txt", "r", encoding="utf-8", errors="ignore") as f:
-            lines = f.readlines()
-
-        total = len(lines)
-        start_time = time.time()
-        status_msg = await update.message.reply_text("⏳ جاري المعالجة...\n📊 0%")
-
-        for i, line in enumerate(lines):
-            line = line.strip()
-            if line:
-                combo = await convert_url_to_combo(line)
-                if combo:
-                    combos.append(combo)
-            if total > 0 and (i + 1) % max(1, total // 10) == 0:
-                elapsed = time.time() - start_time
-                await status_msg.edit_text(
-                    f"⏳ جاري المعالجة...\n"
-                    f"📊 {((i+1)/total*100):.0f}%\n"
-                    f"✅ Combos: {len(combos):,}\n"
-                    f"⚡ {elapsed:.1f}s"
-                )
-
-        output_file = "combos_converted.txt"
-        with open(output_file, "w", encoding="utf-8") as f:
-            for combo in combos:
-                f.write(combo + "\n")
-
-        await status_msg.edit_text(
-            f"✅ تم!\n\n📊 Combos: {len(combos):,}\n⚡ {time.time()-start_time:.1f}s"
-        )
-        await update.message.reply_document(
-            document=open(output_file, "rb"),
-            filename="combos_converted.txt",
-            caption=f"📥 ({len(combos):,})"
-        )
-        if os.path.exists("temp_file.txt"):
-            os.remove("temp_file.txt")
-        return
-
-    # ── ZIP Upload ──
-    if file_name.endswith('.zip'):
-        msg = await update.message.reply_text("📥 جاري رفع...")
-        file = await context.bot.get_file(document.file_id)
-        await file.download_to_drive(ZIP_FILE)
-        await msg.edit_text("🔄 جاري الاستخراج...")
-
-        if os.path.exists(DATA_DIR):
-            shutil.rmtree(DATA_DIR)
-        os.makedirs(DATA_DIR, exist_ok=True)
-
-        with zipfile.ZipFile(ZIP_FILE, 'r') as z:
-            z.extractall(DATA_DIR)
-
-        txt_files = list(Path(DATA_DIR).rglob("*.txt"))
-        await msg.edit_text(f"⚡ بناء Index لـ {len(txt_files)} ملف...")
-        build_search_index()
-
-        await msg.edit_text(
-            f"✅ تم!\n\n"
-            f"📄 Files: `{len(txt_files)}`\n"
-            f"⚡ Lines: `{INDEX_TOTAL_LINES:,}`",
-            parse_mode="Markdown",
-            reply_markup=get_main_menu(is_admin=is_admin)
+    if not (file_name.endswith(".txt") or file_name.endswith(".zip")):
+        await update.message.reply_text(
+            "❌ فقط ملفات TXT أو ZIP مسموحة."
         )
         return
 
+    progress_msg = await update.message.reply_text(
+        "⬇️ جاري تحميل الملف من Telegram...\n\n📊 Progress: 0%"
+    )
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    load_all_data()
-    text = update.message.text.strip()
-    mode = context.user_data.get("mode", "normal")
-    is_admin = update.effective_user.id in ADMIN_IDS
+    telegram_file = await context.bot.get_file(document.file_id)
+    temp_path = f"uploaded_{document.file_name}"
 
-    # ── Google Drive Link Mode ──
-    if mode == "drive_link":
-        if not is_admin:
-            await update.message.reply_text("❌ ما عندكش صلاحية!")
-            return
+    await telegram_file.download_to_drive(temp_path)
 
-        if "drive.google.com" not in text and "id=" not in text:
-            await update.message.reply_text(
-                "❌ *هذا مو رابط Google Drive!*\n\n"
-                "أرسل رابط من النوع:\n"
-                "`https://drive.google.com/file/d/XXXXX/view`",
-                parse_mode="Markdown"
-            )
-            return
+    await progress_msg.edit_text(
+        "🔄 جاري تجهيز الملف...\n⚡ Fast Mode"
+    )
 
-        context.user_data["mode"] = "normal"
-        msg = await update.message.reply_text(
-            "☁️ *جاري التحضير...*",
-            parse_mode="Markdown"
-        )
-        await download_and_index_drive(text, msg, context)
-        return
+    final_file = extract_zip_if_needed(temp_path)
 
-    # ── Search Mode ──
-    if mode == "search":
-        if not INDEX_BUILT:
-            await update.message.reply_text("❌ لا يوجد ملفات!")
-            return
+    if final_file != DATA_FILE:
+        if os.path.exists(DATA_FILE):
+            os.remove(DATA_FILE)
+        os.rename(final_file, DATA_FILE)
 
-        start_time = time.time()
-        search_msg = await update.message.reply_text(
-            f"⚡ *جاري البحث*\n\n🔍 عن: `{text}`",
-            parse_mode="Markdown"
-        )
+    build_search_index()
 
-        results = fast_search(text)
-        elapsed = time.time() - start_time
+    with open(DATA_FILE, "r", encoding="utf-8", errors="ignore") as f:
+        line_count = sum(1 for _ in f)
 
-        if not results:
-            await search_msg.edit_text(f"😕 لم نجد نتائج لـ `{text}`", parse_mode="Markdown")
-            return
-
-        result_file = "resultat.txt"
-        with open(result_file, "w", encoding="utf-8") as f:
-            for i, line in enumerate(results[:5000], 1):
-                f.write(f"{i}. {line}\n")
-
-        await search_msg.edit_text(
-            f"✅ تم!\n\n📊 `{len(results):,}` نتيجة\n⚡ `{elapsed:.2f}s`",
-            parse_mode="Markdown",
-            reply_markup=get_main_menu(is_admin=is_admin)
-        )
-        await update.message.reply_document(
-            document=open(result_file, "rb"),
-            filename="results.txt",
-            caption=f"🔍 {len(results):,} | ⚡ {elapsed:.2f}s"
-        )
+    await progress_msg.edit_text(
+        f"✅ تم رفع الملف بنجاح!\n\n"
+        f"📄 عدد الأسطر: {line_count:,}\n"
+        f"⚡ Fast Indexed Search جاهز"
+    )
 
 
-# ============================================================
-# MAIN
-# ============================================================
 def main():
-    load_all_data()
-    auto_load_on_startup()
-
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button_callback))
+    app.add_handler(CommandHandler("search", search_command))
+    app.add_handler(CommandHandler("stop", stop_command))
+    app.add_handler(CommandHandler("redeem", redeem_command))
+    app.add_handler(CommandHandler("gkey", gkey_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    print("🚀 بوت البحث السريع v7.1 شغال! ✅")
+
+    print("البوت شغال! ✅")
     app.run_polling()
 
 
