@@ -142,9 +142,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     
     if query.data == "search":
+        files_ready = os.path.exists(DATA_DIR) and bool(list(Path(DATA_DIR).rglob("*.txt")))
+        status = "✅ الملفات جاهزة للبحث" if files_ready else "⚠️ لا توجد ملفات - أرسل رابط Drive أولاً"
         await query.edit_message_text(
-            text="🔍 *وضع البحث*\n\n"
-            "📝 أرسل الكلمة التي تريد البحث عنها",
+            text=f"🔍 *وضع البحث*\n\n"
+            f"{status}\n\n"
+            f"📝 أرسل الكلمة التي تريد البحث عنها",
             parse_mode="Markdown"
         )
         context.user_data["mode"] = "search"
@@ -345,14 +348,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 zip_ref.extractall(DATA_DIR)
             
             txt_files = list(Path(DATA_DIR).rglob("*.txt"))
-            context.user_data["files_loaded"] = True
             
             await msg.edit_text(f"✅ تم التحميل!\n\n📄 الملفات: {len(txt_files)}")
         except Exception as e:
             await msg.edit_text(f"❌ خطأ: {str(e)[:50]}")
         return
     
-    if mode == "search" and context.user_data.get("files_loaded"):
+    if mode == "search":
+        if not os.path.exists(DATA_DIR) or not list(Path(DATA_DIR).rglob("*.txt")):
+            await update.message.reply_text("❌ لا توجد ملفات محملة بعد. أرسل رابط Google Drive أولاً.")
+            return
+        
         keyword = text
         search_msg = await update.message.reply_text(f"🔍 بحث...\n⏳ جاري...")
         
