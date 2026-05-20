@@ -1,4 +1,2 @@
-python-telegram-bot==20.6
-requests==2.31.0
-flask==3.0.0
-gdown==5.1.0
+python-telegram-bot
+gdown
